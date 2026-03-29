@@ -63,8 +63,6 @@ class AppState: ObservableObject {
             print("[App] Audio session error: \(error)")
         }
     }
-        }
-    }
 
     private func setupCallbacks() {
         // Connection errors
