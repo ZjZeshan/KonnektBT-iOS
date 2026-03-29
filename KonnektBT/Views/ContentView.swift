@@ -153,10 +153,13 @@ struct HomeView: View {
                 Color(hex: "#0a0c10").ignoresSafeArea()
                 ScrollView {
                     VStack(spacing: 20) {
-                        connectionCard
+                        // ── PAIRED STATUS BANNER ──────────────────────────
+                        pairedStatusBanner
+                        
                         if appState.isInCall, let call = appState.activeCall {
                             ActiveCallCard(call: call)
                         }
+                        
                         HStack(spacing: 12) {
                             FeatureCard(icon: "📞", title: "Calls",
                                         subtitle: "Forwarded to iPhone",
@@ -165,6 +168,7 @@ struct HomeView: View {
                                         subtitle: "\(appState.smsMessages.count) messages",
                                         active: appState.isBridgeConnected)
                         }
+                        
                         if !appState.isBridgeConnected {
                             SetupGuideView()
                         }
@@ -176,51 +180,85 @@ struct HomeView: View {
         }
     }
 
-    var connectionCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 10, height: 10)
-                Text(statusText)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundColor(statusColor)
-            }
-
-            // Real-time status
-            Text(appState.bridgeStatus)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundColor(.gray)
-
-            // Error display
-            if let error = appState.bridgeError {
-                Text(error)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundColor(.red)
-            }
-
-            if !appState.isBridgeConnected {
-                Button("Retry") {
-                    appState.bridge.startDiscovery()
+    // ── PAIRED STATUS BANNER ──────────────────────────────────────────────
+    var pairedStatusBanner: some View {
+        VStack(spacing: 16) {
+            if appState.isBridgeConnected {
+                // ✅ PAIRED STATE
+                HStack(spacing: 12) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 44))
+                        .foregroundColor(Color(hex: "#00e5a0"))
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("✅ PAIRED WITH ANDROID")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(Color(hex: "#00e5a0"))
+                        Text("Calls & SMS are being bridged")
+                            .font(.system(.caption))
+                            .foregroundColor(.gray)
+                    }
+                    
+                    Spacer()
                 }
-                .font(.system(.caption, design: .monospaced))
-                .foregroundColor(Color(hex: "#00e5a0"))
+                .padding(20)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color(hex: "#00e5a0").opacity(0.15))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color(hex: "#00e5a0").opacity(0.5), lineWidth: 2)
+                )
+            } else {
+                // 🔍 NOT PAIRED STATE
+                HStack(spacing: 12) {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.system(size: 44))
+                        .foregroundColor(.orange)
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("SEARCHING FOR ANDROID...")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(.orange)
+                        Text(appState.bridgeStatus)
+                            .font(.system(.caption))
+                            .foregroundColor(.gray)
+                    }
+                    
+                    Spacer()
+                    
+                    Button {
+                        appState.bridge.startDiscovery()
+                    } label: {
+                        Text("Retry")
+                            .font(.system(.caption, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(Color.orange)
+                            .cornerRadius(20)
+                    }
+                }
+                .padding(20)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color.orange.opacity(0.15))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color.orange.opacity(0.5), lineWidth: 2)
+                )
+                
+                // Error message if any
+                if let error = appState.bridgeError {
+                    Text("⚠️ \(error)")
+                        .font(.system(.caption))
+                        .foregroundColor(.red)
+                        .padding(.horizontal, 16)
+                }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
-        .background(Color(hex: "#12151c"))
-        .cornerRadius(20)
-        .overlay(RoundedRectangle(cornerRadius: 20)
-            .stroke(statusColor.opacity(0.3), lineWidth: 1))
-    }
-
-    var statusColor: Color {
-        appState.isBridgeConnected ? Color(hex: "#00e5a0") : Color.orange
-    }
-
-    var statusText: String {
-        appState.isBridgeConnected ? "ANDROID CONNECTED ✓" : "SEARCHING..."
     }
 }
 
