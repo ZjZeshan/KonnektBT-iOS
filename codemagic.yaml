@@ -1,0 +1,61 @@
+workflows:
+  ios-unsigned-ipa:
+    name: KONNEKT — iPhone 15 Pro Max / iOS 26
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      vars:
+        XCODE_PROJECT: KonnektBT.xcodeproj
+        XCODE_SCHEME: KonnektBT
+      xcode: latest
+    triggering:
+      events: [push]
+      branch_patterns:
+        - pattern: main
+          include: true
+    scripts:
+      - name: Show Xcode version
+        script: xcodebuild -version
+
+      - name: Build for iPhone (arm64)
+        script: |
+          xcodebuild build \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$CM_BUILD_DIR/DerivedData" \
+            ARCHS="arm64" \
+            ONLY_ACTIVE_ARCH=NO \
+            VALID_ARCHS="arm64" \
+            EXCLUDED_ARCHS="x86_64 armv7 armv7s" \
+            PRODUCT_BUNDLE_IDENTIFIER="com.zjzeshan.konnektbt" \
+            IPHONEOS_DEPLOYMENT_TARGET="16.0" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            ENABLE_BITCODE=NO
+
+      - name: Confirm arm64
+        script: |
+          APP=$(find "$CM_BUILD_DIR/DerivedData" -name "KonnektBT.app" -not -path "*simulator*" | head -1)
+          echo "App: $APP"
+          lipo -info "$APP/KonnektBT"
+
+      - name: Package IPA
+        script: |
+          APP=$(find "$CM_BUILD_DIR/DerivedData" -name "KonnektBT.app" -not -path "*simulator*" | head -1)
+          rm -rf   "$CM_BUILD_DIR/Payload"
+          mkdir -p "$CM_BUILD_DIR/Payload"
+          cp -r "$APP" "$CM_BUILD_DIR/Payload/KonnektBT.app"
+          cd "$CM_BUILD_DIR"
+          zip -r KonnektBT.ipa Payload/
+          echo "IPA: $(ls -lh KonnektBT.ipa | awk '{print $5}')"
+
+    artifacts:
+      - $CM_BUILD_DIR/KonnektBT.ipa
+    publishing:
+      email:
+        recipients: [zjzeshan2@gmail.com]
+        notify: { success: true, failure: true }
