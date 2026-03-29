@@ -474,10 +474,29 @@ class BluetoothBridge: NSObject, ObservableObject {
             guard let self = self else { return }
 
             switch type {
+            // ── Handshake from Android ────────────────────────────────────
+            case "HANDSHAKE":
+                // Android sent handshake, respond with our identity
+                let platform = obj["platform"] as? String ?? "unknown"
+                print("[Konnekt] Android handshake: platform=\(platform)")
+                self.updateStatus("Android connected!")
+                // Send our handshake back
+                self.sendPacket([
+                    "type": "HANDSHAKE",
+                    "platform": "ios",
+                    "version": "2.4",
+                    "audioFormat": [
+                        "sampleRate": 16000,
+                        "bitDepth": 16,
+                        "channels": 1
+                    ]
+                ])
+
             case "HANDSHAKE_ACK":
                 self.updateStatus("Connected & Synced!")
                 self.lastError = nil
 
+            // ── Call Events ──────────────────────────────────────────────
             case "CALL_INCOMING":
                 let id = obj["callId"] as? String ?? UUID().uuidString
                 guard id != self.lastCallId else { return }
@@ -492,9 +511,12 @@ class BluetoothBridge: NSObject, ObservableObject {
                 self.lastCallId = ""
                 self.onCallEnded?()
 
+            // ── SMS Events ───────────────────────────────────────────────
             case "SMS_RECEIVED", "SMS_HISTORY", "SMS", "MESSAGE":
                 var ts = obj["timestamp"] as? TimeInterval ?? Date().timeIntervalSince1970
-                if ts < 946684800 { ts *= 1000 }  // Convert ms to s if needed
+                // Handle both milliseconds and seconds
+                if ts < 946684800 { ts *= 1000 }  // Convert s to ms
+                if ts > 2114380800 { ts /= 1000 }  // Convert ms to s (if already in seconds)
 
                 let sender = obj["sender"] as? String ?? obj["name"] as? String ?? "Unknown"
                 let number = obj["number"] as? String ?? obj["from"] as? String ?? ""
@@ -504,12 +526,18 @@ class BluetoothBridge: NSObject, ObservableObject {
                     sender: sender, number: number, body: body,
                     timestamp: ts, isHistory: type == "SMS_HISTORY"))
 
+            // ── Heartbeat / Keep-alive ───────────────────────────────────
+            case "HEARTBEAT":
+                // Android is checking if we're alive
+                self.sendPacket(["type": "PONG"])
             case "PING":
                 self.sendPacket(["type": "PONG"])
             case "PONG", "ACK", "SYNC_COMPLETE":
+                // Connection is alive
                 break
+
             default:
-                print("[Konnekt] Unknown: \(type)")
+                print("[Konnekt] Unknown message: \(type)")
             }
         }
     }

@@ -4,19 +4,26 @@ import AVFAudio
 
 class AudioStreamManager: ObservableObject {
 
-    // FIXED: Use lazy initialization instead of reassignment
+    // Audio Specifications:
+    // - Sample Rate: 16,000 Hz (16kHz)
+    // - Bit Depth: 16-bit Linear PCM
+    // - Channels: Mono
+    // - Format: PCM 16-bit signed integer (little-endian)
+
     private var audioEngine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
     private var inputTapInstalled = false
 
+    // Target format: 16kHz, Mono, 16-bit PCM
     private let targetFormat = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: 8000, channels: 1, interleaved: false)!
+        commonFormat: .pcmFormatInt16,
+        sampleRate: 16000,
+        channels: 1,
+        interleaved: true)!
 
     private var isRunning = false
     var onCapturedAudio: ((Data) -> Void)?
 
-    // FIXED: Thread-safe state management
     private let stateQueue = DispatchQueue(label: "com.konnekt.audio.state")
 
     func start() {
@@ -36,20 +43,22 @@ class AudioStreamManager: ObservableObject {
     }
 
     private func setupEngine() {
-        // FIXED: Don't recreate if already setup, just return
         guard audioEngine == nil else { return }
 
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
 
         engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: targetFormat)
+
+        // Use native format for playback (will convert input)
+        let outputFormat = engine.mainMixerNode.outputFormat(forBus: 0)
+        engine.connect(player, to: engine.mainMixerNode, format: outputFormat)
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
-        // FIXED: Store reference before installing tap
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+        // Install tap on input
+        inputNode.installTap(onBus: 0, bufferSize: 512, format: inputFormat) { [weak self] buffer, _ in
             self?.processMicAudio(buffer)
         }
 
@@ -71,7 +80,6 @@ class AudioStreamManager: ObservableObject {
 
         if let engine = audioEngine {
             engine.stop()
-            // FIXED: Detach player node before releasing
             if let player = playerNode {
                 engine.detach(player)
             }
@@ -80,67 +88,72 @@ class AudioStreamManager: ObservableObject {
     }
 
     func playAudio(_ pcmData: Data) {
-        guard let player = playerNode, let engine = audioEngine, engine.isRunning else { return }
+        guard let player = playerNode,
+              let engine = audioEngine,
+              engine.isRunning else { return }
 
-        let sampleCount = pcmData.count / 2
-        guard sampleCount > 0,
-              let buffer = AVAudioPCMBuffer(pcmFormat: targetFormat,
+        let sampleCount = pcmData.count / 2  // 16-bit = 2 bytes per sample
+        guard sampleCount > 0 else { return }
+
+        // Create buffer with native format
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: targetFormat,
                                            frameCapacity: AVAudioFrameCount(sampleCount))
         else { return }
 
         buffer.frameLength = AVAudioFrameCount(sampleCount)
-        guard let floatCh = buffer.floatChannelData?[0] else { return }
 
+        // Copy PCM data to buffer
         pcmData.withUnsafeBytes { raw in
-            let ptr = raw.bindMemory(to: Int16.self)
-            for i in 0..<sampleCount { floatCh[i] = Float(ptr[i]) / 32768.0 }
+            if let int16Pointer = raw.bindMemory(to: Int16.self).baseAddress {
+                buffer.int16ChannelData?.pointee.update(from: int16Pointer, count: sampleCount)
+            }
         }
 
-        if !player.isPlaying { player.play() }
+        if !player.isPlaying {
+            player.play()
+        }
         player.scheduleBuffer(buffer)
     }
 
     private func processMicAudio(_ buffer: AVAudioPCMBuffer) {
-        guard let resampled = resample(buffer) else { return }
+        // Convert to target format (16kHz mono)
+        guard let converted = convertToTargetFormat(buffer) else { return }
 
-        // FIXED: Use correct resampled data length
-        let count = Int(resampled.frameLength)
-        var data = Data(count: count * 2)
+        let sampleCount = Int(converted.frameLength)
+        var data = Data(count: sampleCount * 2)  // 16-bit = 2 bytes
 
-        guard let floatData = resampled.floatChannelData?[0] else { return }
-
-        data.withUnsafeMutableBytes { raw in
-            let ptr = raw.bindMemory(to: Int16.self)
-            for i in 0..<count {
-                // FIXED: Proper Int16 conversion with clamping
-                let clamped = max(-1.0, min(1.0, floatData[i]))
-                ptr[i] = Int16(clamped * 32767.0)
+        // Convert to Int16 PCM
+        if let int16Data = converted.int16ChannelData?.pointee {
+            data.withUnsafeMutableBytes { raw in
+                raw.copyMemory(from: UnsafeRawPointer(int16Data), byteCount: sampleCount * 2)
             }
         }
+
         onCapturedAudio?(data)
     }
 
-    // FIXED: Proper AVAudioConverter resampling implementation
-    private func resample(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        if buffer.format.sampleRate == 8000 { return buffer }
+    private func convertToTargetFormat(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        // If already 16kHz mono, return as-is
+        if buffer.format.sampleRate == 16000 && buffer.format.channelCount == 1 {
+            return buffer
+        }
 
         guard let converter = AVAudioConverter(from: buffer.format, to: targetFormat) else {
             return nil
         }
 
-        // Calculate output frame capacity
-        let ratio = targetFormat.sampleRate / buffer.format.sampleRate
-        let outputFrameCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
+        let ratio = 16000.0 / buffer.format.sampleRate
+        let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
 
-        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputFrameCapacity) else {
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat,
+                                                  frameCapacity: outputFrameCount) else {
             return nil
         }
 
-        var conversionError: NSError?
+        var error: NSError?
         var inputConsumed = false
 
-        // FIXED: Proper conversion loop
-        converter.convert(to: outputBuffer, error: &conversionError) { inNumPackets, outStatus in
+        converter.convert(to: outputBuffer, error: &error) { _, outStatus in
             if inputConsumed {
                 outStatus.pointee = .noDataNow
                 return nil
@@ -150,8 +163,8 @@ class AudioStreamManager: ObservableObject {
             return buffer
         }
 
-        if let error = conversionError {
-            print("[Audio] Resample error: \(error)")
+        if let error = error {
+            print("[Audio] Convert error: \(error)")
             return nil
         }
 
@@ -176,7 +189,6 @@ class AudioStreamManager: ObservableObject {
 
         if let engine = audioEngine {
             engine.stop()
-            // FIXED: Detach all nodes properly
             if let player = playerNode {
                 engine.detach(player)
             }

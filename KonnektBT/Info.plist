@@ -5,8 +5,8 @@
     <key>CFBundleDisplayName</key><string>KONNEKT</string>
     <key>CFBundleIdentifier</key><string>com.zjzeshan.konnektbt</string>
     <key>CFBundleName</key><string>KonnektBT</string>
-    <key>CFBundleVersion</key><string>4</string>
-    <key>CFBundleShortVersionString</key><string>2.4</string>
+    <key>CFBundleVersion</key><string>5</string>
+    <key>CFBundleShortVersionString</key><string>2.5</string>
     <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSRequiresIPhoneOS</key><true/>
@@ -23,15 +23,20 @@
     <string>KONNEKT needs microphone access to relay your voice during forwarded calls</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>KONNEKT connects to your Android phone on the local WiFi network to bridge calls and SMS messages</string>
+    
+    <!-- Bonjour Service Discovery -->
     <key>NSBonjourServices</key>
     <array>
+        <!-- iOS browses for Android using this service type -->
         <string>_konnekt._tcp</string>
     </array>
     
     <!-- Background Modes -->
     <key>UIBackgroundModes</key>
     <array>
+        <!-- Audio mode - required for VoIP/audio streaming -->
         <string>audio</string>
+        <!-- VoIP mode - keeps TCP connection alive in background -->
         <string>voip</string>
     </array>
     
