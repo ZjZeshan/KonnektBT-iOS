@@ -5,8 +5,8 @@
     <key>CFBundleDisplayName</key><string>KONNEKT</string>
     <key>CFBundleIdentifier</key><string>com.zjzeshan.konnektbt</string>
     <key>CFBundleName</key><string>KonnektBT</string>
-    <key>CFBundleVersion</key><string>2</string>
-    <key>CFBundleShortVersionString</key><string>2.0</string>
+    <key>CFBundleVersion</key><string>3</string>
+    <key>CFBundleShortVersionString</key><string>2.3</string>
     <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSRequiresIPhoneOS</key><true/>
@@ -32,14 +32,25 @@
     <!-- Background Modes -->
     <key>UIBackgroundModes</key>
     <array>
-        <string>voip</string>
+        <!-- Audio mode - keeps app running when locked -->
         <string>audio</string>
+        <!-- VoIP mode - keeps TCP connection alive -->
+        <string>voip</string>
+        <!-- Background fetch -->
         <string>fetch</string>
-        <string>remote-notification</string>
+        <!-- Background processing -->
         <string>processing</string>
+        <!-- Remote notifications -->
+        <string>remote-notification</string>
     </array>
     
-    <!-- Required for local network access -->
+    <!-- Local Network Access -->
     <key>NSAllowsLocalNetworking</key><true/>
+    
+    <!-- Background Task Identifiers -->
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>com.zjzeshan.konnektbt.refresh</string>
+    </array>
 </dict>
 </plist>

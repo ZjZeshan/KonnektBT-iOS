@@ -330,12 +330,16 @@ class BluetoothBridge: NSObject, ObservableObject {
 
     // MARK: - Reconnection
 
-    private func scheduleReconnect() {
+    private func scheduleReconnect(immediate: Bool = false) {
         reconnectTimer?.invalidate()
-        reconnectTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
+        
+        // In background, reconnect faster to maintain connection
+        let delay = immediate ? 1.0 : 3.0
+        
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             guard let self = self else { return }
             if self.state != .connected {
-                self.updateStatus("Retrying connection...")
+                self.updateStatus("Reconnecting...")
                 if let ep = self.lastEndpoint {
                     self.connect(to: ep)
                 } else {
@@ -343,6 +347,12 @@ class BluetoothBridge: NSObject, ObservableObject {
                 }
             }
         }
+    }
+    
+    /// Force immediate reconnection (for background wake)
+    func forceReconnect() {
+        teardown()
+        scheduleReconnect(immediate: true)
     }
 
     private func teardown() {
@@ -551,6 +561,16 @@ class BluetoothBridge: NSObject, ObservableObject {
     func sendCallEnded()    { sendPacket(["type": "CALL_ENDED"]) }
     func sendSMS(to number: String, body: String) {
         sendPacket(["type": "SEND_SMS", "to": number, "body": body])
+    }
+    
+    /// Keep-alive heartbeat for background mode
+    func sendHeartbeat() {
+        guard isConnected else {
+            // No connection - try to reconnect
+            scheduleReconnect(immediate: true)
+            return
+        }
+        sendPacket(["type": "HEARTBEAT", "timestamp": Date().timeIntervalSince1970])
     }
 
     func disconnect() {
