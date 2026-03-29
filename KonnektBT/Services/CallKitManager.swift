@@ -173,11 +173,11 @@ extension CallKitManager: CXProviderDelegate {
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            // FIXED: Use voice chat mode which has better compatibility
+            // Use voice chat mode which has better compatibility
             try session.setCategory(.playAndRecord, mode: .voiceChat,
-                                    options: [.allowBluetoothHFP, .defaultToSpeaker, .allowBluetooth])
+                                    options: [.allowBluetoothHFP, .defaultToSpeaker])
 
-            // FIXED: Request reasonable sample rate instead of forcing 8000
+            // Request reasonable sample rate instead of forcing 8000
             // iOS hardware typically supports 44100 or 48000
             try session.setPreferredSampleRate(44100)
             try session.setPreferredIOBufferDuration(0.005) // 5ms buffer for low latency
@@ -185,7 +185,7 @@ extension CallKitManager: CXProviderDelegate {
             print("[CallKit] Audio session configured: sampleRate=\(session.sampleRate)")
         } catch {
             print("[CallKit] Audio session error: \(error)")
-            // FIXED: Fallback to basic configuration
+            // Fallback to basic configuration
             do {
                 try session.setCategory(.playAndRecord, mode: .default)
                 try session.setActive(true)

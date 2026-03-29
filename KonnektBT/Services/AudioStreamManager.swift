@@ -8,18 +8,14 @@ class AudioStreamManager: ObservableObject {
     // - Sample Rate: 16,000 Hz (16kHz)
     // - Bit Depth: 16-bit Linear PCM
     // - Channels: Mono
-    // - Format: PCM 16-bit signed integer (little-endian)
 
     private var audioEngine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
     private var inputTapInstalled = false
 
-    // Target format: 16kHz, Mono, 16-bit PCM
-    private let targetFormat = AVAudioFormat(
-        commonFormat: .pcmFormatInt16,
-        sampleRate: 16000,
-        channels: 1,
-        interleaved: true)!
+    // Target format: 16kHz, Mono, Float32 (will convert to Int16 for sending)
+    private let targetSampleRate: Double = 16000
+    private let targetChannels: AVAudioChannelCount = 1
 
     private var isRunning = false
     var onCapturedAudio: ((Data) -> Void)?
@@ -50,7 +46,7 @@ class AudioStreamManager: ObservableObject {
 
         engine.attach(player)
 
-        // Use native format for playback (will convert input)
+        // Use native format for playback
         let outputFormat = engine.mainMixerNode.outputFormat(forBus: 0)
         engine.connect(player, to: engine.mainMixerNode, format: outputFormat)
 
@@ -95,17 +91,24 @@ class AudioStreamManager: ObservableObject {
         let sampleCount = pcmData.count / 2  // 16-bit = 2 bytes per sample
         guard sampleCount > 0 else { return }
 
-        // Create buffer with native format
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: targetFormat,
-                                           frameCapacity: AVAudioFrameCount(sampleCount))
+        // Create buffer with interleaved format
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                         sampleRate: targetSampleRate,
+                                         channels: targetChannels,
+                                         interleaved: true),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format,
+                                          frameCapacity: AVAudioFrameCount(sampleCount))
         else { return }
 
         buffer.frameLength = AVAudioFrameCount(sampleCount)
 
         // Copy PCM data to buffer
-        pcmData.withUnsafeBytes { raw in
-            if let int16Pointer = raw.bindMemory(to: Int16.self).baseAddress {
-                buffer.int16ChannelData?.pointee.update(from: int16Pointer, count: sampleCount)
+        pcmData.withUnsafeBytes { rawPtr in
+            if let dest = buffer.int16ChannelData?[0] {
+                let src = rawPtr.bindMemory(to: Int16.self)
+                for i in 0..<sampleCount {
+                    dest[i] = src[i]
+                }
             }
         }
 
@@ -119,13 +122,19 @@ class AudioStreamManager: ObservableObject {
         // Convert to target format (16kHz mono)
         guard let converted = convertToTargetFormat(buffer) else { return }
 
-        let sampleCount = Int(converted.frameLength)
-        var data = Data(count: sampleCount * 2)  // 16-bit = 2 bytes
+        let frameCount = Int(converted.frameLength)
+        var data = Data(count: frameCount * 2)  // 16-bit = 2 bytes
 
-        // Convert to Int16 PCM
-        if let int16Data = converted.int16ChannelData?.pointee {
-            data.withUnsafeMutableBytes { raw in
-                raw.copyMemory(from: UnsafeRawPointer(int16Data), byteCount: sampleCount * 2)
+        // Convert float to Int16
+        if let floatChannel = converted.floatChannelData?[0] {
+            data.withUnsafeMutableBytes { rawPtr in
+                let int16Ptr = rawPtr.bindMemory(to: Int16.self)
+                for i in 0..<frameCount {
+                    let sample = floatChannel[i]
+                    // Clamp and convert
+                    let clamped = max(-1.0, min(1.0, sample))
+                    int16Ptr[i] = Int16(clamped * 32767.0)
+                }
             }
         }
 
@@ -133,16 +142,24 @@ class AudioStreamManager: ObservableObject {
     }
 
     private func convertToTargetFormat(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        // If already 16kHz mono, return as-is
-        if buffer.format.sampleRate == 16000 && buffer.format.channelCount == 1 {
+        // If already 16kHz mono float, return as-is
+        if buffer.format.sampleRate == targetSampleRate && buffer.format.channelCount == 1 {
             return buffer
+        }
+
+        // Create target format
+        guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                               sampleRate: targetSampleRate,
+                                               channels: targetChannels,
+                                               interleaved: false) else {
+            return nil
         }
 
         guard let converter = AVAudioConverter(from: buffer.format, to: targetFormat) else {
             return nil
         }
 
-        let ratio = 16000.0 / buffer.format.sampleRate
+        let ratio = targetSampleRate / buffer.format.sampleRate
         let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
 
         guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat,

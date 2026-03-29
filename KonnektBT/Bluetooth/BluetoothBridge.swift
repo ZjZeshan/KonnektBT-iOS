@@ -272,6 +272,16 @@ class BluetoothBridge: NSObject, ObservableObject {
             guard let self = self else { return }
 
             switch s {
+            case .setup:
+                DispatchQueue.main.async {
+                    self.updateStatus("Setting up connection...")
+                }
+
+            case .preparing:
+                DispatchQueue.main.async {
+                    self.updateStatus("Preparing connection...")
+                }
+
             case .ready:
                 DispatchQueue.main.async {
                     self.state = .connected
@@ -283,7 +293,7 @@ class BluetoothBridge: NSObject, ObservableObject {
                     self.readLoop(conn: connection)
 
                     // Send handshake
-                    self.sendPacket(["type": "HANDSHAKE", "platform": "ios", "version": "1.0"])
+                    self.sendPacket(["type": "HANDSHAKE", "platform": "ios", "version": "2.6"])
                 }
 
             case .failed(let err):
@@ -310,8 +320,10 @@ class BluetoothBridge: NSObject, ObservableObject {
                     self.state = .idle
                 }
 
-            case .preparing:
-                DispatchQueue.main.async {
+            @unknown default:
+                break
+            }
+        }
                     self.updateStatus("Preparing connection...")
                 }
 

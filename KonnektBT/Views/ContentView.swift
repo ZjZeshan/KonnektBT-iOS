@@ -57,7 +57,7 @@ class AppState: ObservableObject {
     private func activateBackgroundAudio() {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .defaultToSpeaker])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             print("[App] Audio session error: \(error)")
@@ -66,7 +66,7 @@ class AppState: ObservableObject {
 
     private func setupCallbacks() {
         // Connection errors
-        bridge.onConnectionError = { [weak self] error in
+        bridge.onConnectionError = { error in
             print("[App] Connection error: \(error)")
         }
 
