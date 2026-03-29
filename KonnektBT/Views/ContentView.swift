@@ -1,7 +1,6 @@
 // KonnektBT/Views/ContentView.swift
 import SwiftUI
 import AVFoundation
-import BackgroundTasks
 import UIKit
 
 // ── AppState ──────────────────────────────────────────────────────────────────
@@ -18,12 +17,6 @@ class AppState: ObservableObject {
     @Published var isBridgeConnected: Bool = false
     @Published var bridgeStatus: String = "Ready"
     @Published var bridgeError: String?
-    
-    // Background task
-    var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
-    private var backgroundTimer: Timer?
-    private var pingTimer: Timer?
-    private var wasConnectedBeforeBackground = false
 
     init() {
         setupBridgeObserver()
@@ -48,106 +41,28 @@ class AppState: ObservableObject {
     }
 
     func handleBackground() {
-        print("[App] Entering background - keeping connection alive")
-        
-        // Store connection state
-        wasConnectedBeforeBackground = bridge.isConnected
-        
-        // Request background execution time (iOS gives ~30 seconds)
-        backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "KonnektBackground") { [weak self] in
-            print("[App] Background time expiring")
-            self?.endBackgroundTask()
-        }
-        
-        // Start ping timer to keep connection alive
-        // TCP connections can be killed by iOS if idle too long
-        startBackgroundPing()
-        
-        // Activate audio session in background (keeps app alive)
-        activateBackgroundAudioSession()
-        
-        // Schedule background refresh
-        scheduleBackgroundRefresh()
+        print("[App] Entering background")
+        // Keep audio session active for VoIP background mode
+        activateBackgroundAudio()
     }
     
     func handleForeground() {
         print("[App] Entering foreground")
-        
-        // End background task
-        endBackgroundTask()
-        
-        // Stop background ping
-        stopBackgroundPing()
-        
-        // Ensure connection is active
-        if !bridge.isConnected && wasConnectedBeforeBackground {
-            print("[App] Was connected before background - reconnecting")
-            bridge.startDiscovery()
-        }
-    }
-    
-    func refreshInBackground() {
-        // Called by system periodically when in background
-        print("[App] Background refresh - keeping connection alive")
-        
-        // Send ping to keep connection alive
-        if bridge.isConnected {
-            bridge.sendPacket(["type": "PING"])
-        }
-        
         // Reconnect if needed
-        if !bridge.isConnected && wasConnectedBeforeBackground {
+        if !bridge.isConnected {
             bridge.startDiscovery()
         }
-        
-        // Schedule next refresh
-        scheduleBackgroundRefresh()
     }
     
-    private func startBackgroundPing() {
-        // Send ping every 25 seconds (keep-alive for TCP)
-        pingTimer = Timer.scheduledTimer(withTimeInterval: 25.0, repeats: true) { [weak self] _ in
-            guard let self = self, self.bridge.isConnected else { return }
-            self.bridge.sendPacket(["type": "PING"])
-            print("[App] Background ping sent")
-        }
-    }
-    
-    private func stopBackgroundPing() {
-        pingTimer?.invalidate()
-        pingTimer = nil
-    }
-    
-    private func activateBackgroundAudioSession() {
+    private func activateBackgroundAudio() {
         do {
             let session = AVAudioSession.sharedInstance()
-            // Use playback mode for background (keeps app alive)
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try session.setActive(true)
-            print("[App] Background audio session activated")
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
-            print("[App] Failed to activate background audio: \(error)")
+            print("[App] Audio session error: \(error)")
         }
     }
-    
-    private func scheduleBackgroundRefresh() {
-        // Schedule background app refresh
-        let request = BGAppRefreshTaskRequest(identifier: "com.zjzeshan.konnektbt.refresh")
-        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60) // 15 minutes
-        
-        do {
-            try BGTaskScheduler.shared.submit(request)
-            print("[App] Background refresh scheduled")
-        } catch {
-            print("[App] Failed to schedule background refresh: \(error)")
-        }
-    }
-    
-    private func endBackgroundTask() {
-        if backgroundTaskId != .invalid {
-            UIApplication.shared.endBackgroundTask(backgroundTaskId)
-            backgroundTaskId = .invalid
-            print("[App] Background task ended")
         }
     }
 
