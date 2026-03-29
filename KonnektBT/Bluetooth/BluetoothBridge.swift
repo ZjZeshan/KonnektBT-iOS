@@ -320,14 +320,7 @@ class BluetoothBridge: NSObject, ObservableObject {
                     self.state = .idle
                 }
 
-            @unknown default:
-                break
-            }
-        }
-                    self.updateStatus("Preparing connection...")
-                }
-
-            @unknown default:
+            default:
                 break
             }
         }
