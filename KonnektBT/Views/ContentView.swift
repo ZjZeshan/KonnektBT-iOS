@@ -10,12 +10,31 @@ class AppState: ObservableObject {
     @Published var smsMessages: [SMSPacket] = []
     @Published var activeCall:  CallPacket?
     @Published var isInCall     = false
+    
+    // Mirror bridge state so SwiftUI can observe it
+    @Published var isBridgeConnected: Bool = false
+    @Published var bridgeStatus: String = "Ready"
+    @Published var bridgeError: String?
 
     init() {
+        setupBridgeObserver()
         setupCallbacks()
         // Start discovery after network monitor initializes
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.bridge.startDiscovery()
+        }
+    }
+    
+    private func setupBridgeObserver() {
+        // Observe bridge changes manually
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
+            guard let self = self else {
+                timer.invalidate()
+                return
+            }
+            self.isBridgeConnected = self.bridge.isConnected
+            self.bridgeStatus = self.bridge.connectionStatus
+            self.bridgeError = self.bridge.lastError
         }
     }
 
@@ -141,12 +160,12 @@ struct HomeView: View {
                         HStack(spacing: 12) {
                             FeatureCard(icon: "📞", title: "Calls",
                                         subtitle: "Forwarded to iPhone",
-                                        active: appState.bridge.isConnected)
+                                        active: appState.isBridgeConnected)
                             FeatureCard(icon: "💬", title: "SMS",
                                         subtitle: "\(appState.smsMessages.count) messages",
-                                        active: appState.bridge.isConnected)
+                                        active: appState.isBridgeConnected)
                         }
-                        if !appState.bridge.isConnected {
+                        if !appState.isBridgeConnected {
                             SetupGuideView()
                         }
                     }
@@ -169,18 +188,18 @@ struct HomeView: View {
             }
 
             // Real-time status
-            Text(appState.bridge.connectionStatus)
+            Text(appState.bridgeStatus)
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundColor(.gray)
 
             // Error display
-            if let error = appState.bridge.lastError {
+            if let error = appState.bridgeError {
                 Text(error)
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundColor(.red)
             }
 
-            if !appState.bridge.isConnected {
+            if !appState.isBridgeConnected {
                 Button("Retry") {
                     appState.bridge.startDiscovery()
                 }
@@ -197,11 +216,11 @@ struct HomeView: View {
     }
 
     var statusColor: Color {
-        appState.bridge.isConnected ? Color(hex: "#00e5a0") : Color.orange
+        appState.isBridgeConnected ? Color(hex: "#00e5a0") : Color.orange
     }
 
     var statusText: String {
-        appState.bridge.isConnected ? "ANDROID CONNECTED ✓" : "SEARCHING..."
+        appState.isBridgeConnected ? "ANDROID CONNECTED ✓" : "SEARCHING..."
     }
 }
 
