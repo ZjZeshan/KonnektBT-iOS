@@ -17,7 +17,6 @@ struct SMSPacket: Identifiable {
     let isHistory: Bool
 
     var date: Date {
-        // Handle both seconds and milliseconds
         let ts = timestamp < 946684800 ? timestamp / 1000.0 : timestamp
         return Date(timeIntervalSince1970: ts)
     }
@@ -26,40 +25,39 @@ struct SMSPacket: Identifiable {
 // MARK: - Connection Bridge
 class BluetoothBridge: NSObject, ObservableObject {
 
-    // ── Connection Constants ─────────────────────────────────────────────────
-    static let bonjourType  = "_konnekt._tcp"
-    static let bonjourName  = "KonnektAndroid"  // Android must advertise this name
+    // Connection Constants
+    static let bonjourType = "_konnekt._tcp"
+    static let bonjourName = "KonnektAndroid"
     static let bonjourPort: UInt16 = 43210
-    private static let MARK_JSON:  UInt8 = 0xAC
+    private static let MARK_JSON: UInt8 = 0xAC
     private static let MARK_AUDIO: UInt8 = 0xAB
 
-    // ── Public State ────────────────────────────────────────────────────────
-    @Published var isConnected       = false
-    @Published var localIPAddress    = "Detecting..."
-    @Published var connectionStatus  = "Ready"
-    @Published var discoveredDevices: [String] = []  // For UI feedback
+    // Public State
+    @Published var isConnected = false
+    @Published var localIPAddress = "Detecting..."
+    @Published var connectionStatus = "Ready"
     @Published var lastError: String?
 
-    // ── Callbacks ───────────────────────────────────────────────────────────
-    var onCallIncoming:  ((CallPacket) -> Void)?
-    var onCallEnded:     (() -> Void)?
-    var onSMSReceived:   ((SMSPacket) -> Void)?
+    // Callbacks
+    var onCallIncoming: ((CallPacket) -> Void)?
+    var onCallEnded: (() -> Void)?
+    var onSMSReceived: ((SMSPacket) -> Void)?
     var onAudioReceived: ((Data) -> Void)?
     var onConnectionError: ((String) -> Void)?
 
-    // ── Private State ───────────────────────────────────────────────────────
+    // Private State
     private enum State { case idle, searching, connecting, connected }
-    private var state:          State     = .idle
-    private var browser:         NWBrowser?
-    private var pathMonitor:     NWPathMonitor?
-    private var lastEndpoint:    NWEndpoint?
-    private var reconnectTimer:  Timer?
-    private var lastCallId       = ""
+    private var state: State = .idle
+    private var browser: NWBrowser?
+    private var pathMonitor: NWPathMonitor?
+    private var lastEndpoint: NWEndpoint?
+    private var reconnectTimer: Timer?
+    private var lastCallId = ""
 
-    // ── Private - IO Queue ─────────────────────────────────────────────────
+    // Private - IO Queue
     private let ioQ = DispatchQueue(label: "com.konnekt.io", qos: .userInitiated)
     private var conn: NWConnection?
-    private var buf  = Data()
+    private var buf = Data()
 
     // ───────────────────────────────────────────────────────────────────────
     override init() {
@@ -120,19 +118,16 @@ class BluetoothBridge: NSObject, ObservableObject {
                 let name = String(cString: ifa.ifa_name)
                 if !ip.hasPrefix("127.") && !ip.isEmpty {
                     table[name] = ip
-                    print("[Konnekt] Found interface \(name): \(ip)")
                 }
             }
             guard let next = ifa.ifa_next else { break }
             ptr = next
         }
 
-        // Priority: WiFi interfaces
         for iface in ["en0", "en1", "en2", "en3", "bridge100", "bridge101"] {
             if let ip = table[iface] { return ip }
         }
 
-        // Fallback: any non-loopback IP
         return table.values.first
     }
 
@@ -146,7 +141,7 @@ class BluetoothBridge: NSObject, ObservableObject {
                 self.refreshLocalIP()
 
                 if path.status == .satisfied {
-                    if self.state == .idle || self.state == .searching {
+                    if self.state == .idle {
                         self.updateStatus("Network available")
                     }
                 } else {
@@ -158,22 +153,19 @@ class BluetoothBridge: NSObject, ObservableObject {
         pathMonitor?.start(queue: DispatchQueue(label: "com.konnekt.network"))
     }
 
-    // MARK: - Discovery (Bonjour + Manual)
+    // MARK: - Discovery
 
-    /// Start automatic discovery via Bonjour
     func startDiscovery() {
         guard state == .idle || state == .searching else { return }
 
         updateStatus("Searching for Android...")
         state = .searching
 
-        // Cancel any existing browser
         browser?.cancel()
         browser = nil
 
-        // Create Bonjour browser
         let params = NWParameters()
-        params.includePeerToPeer = true  // Enable peer-to-peer for direct WiFi
+        params.includePeerToPeer = true
 
         let browser = NWBrowser(for: .bonjour(type: Self.bonjourType, domain: nil), using: params)
 
@@ -183,7 +175,6 @@ class BluetoothBridge: NSObject, ObservableObject {
                 self?.updateStatus("Discovery ready")
             case .failed(let err):
                 self?.updateError("Discovery failed: \(err.localizedDescription)")
-                // Retry after delay
                 DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                     self?.startDiscovery()
                 }
@@ -192,22 +183,15 @@ class BluetoothBridge: NSObject, ObservableObject {
             case .setup:
                 self?.updateStatus("Setting up discovery...")
             case .waiting(let err):
-                self?.updateError("Waiting: \(err.localizedDescription)")
+                self?.updateStatus("Waiting: \(err.localizedDescription)")
             @unknown default:
                 break
             }
         }
 
-        browser.browseResultsChangedHandler = { [weak self] results, changes in
+        browser.browseResultsChangedHandler = { [weak self] results, _ in
             guard let self = self else { return }
 
-            print("[Konnekt] Found \(results.count) device(s)")
-
-            for result in results {
-                print("[Konnekt] Device: \(result.endpoint)")
-            }
-
-            // Pick first available device
             if let firstResult = results.first {
                 let endpoint = firstResult.endpoint
                 self.lastEndpoint = endpoint
@@ -219,14 +203,12 @@ class BluetoothBridge: NSObject, ObservableObject {
         self.browser = browser
         browser.start(queue: DispatchQueue(label: "com.konnekt.browser"))
 
-        // Timeout - fallback to manual mode after 15 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             guard let self = self, self.state == .searching else { return }
             self.updateStatus("No auto-discovery. Use manual IP.")
         }
     }
 
-    /// Connect to a specific IP address
     func connectToIP(_ ip: String, port: UInt16? = nil) {
         let targetPort = port ?? Self.bonjourPort
         updateStatus("Connecting to \(ip)...")
@@ -236,15 +218,10 @@ class BluetoothBridge: NSObject, ObservableObject {
             return
         }
 
-        // Stop discovery if running
         browser?.cancel()
         browser = nil
 
-        let endpoint = NWEndpoint.hostPort(
-            host: .init(ip),
-            port: .init(integerLiteral: targetPort)
-        )
-
+        let endpoint = NWEndpoint.hostPort(host: .init(ip), port: .init(integerLiteral: targetPort))
         lastEndpoint = endpoint
         state = .connecting
         connect(to: endpoint)
@@ -254,14 +231,13 @@ class BluetoothBridge: NSObject, ObservableObject {
 
     private func connect(to endpoint: NWEndpoint) {
         guard state == .searching || state == .connecting || state == .idle else {
-            print("[Konnekt] Already connected, ignoring connect request")
+            print("[Konnekt] Already connected, ignoring")
             return
         }
 
         updateStatus("Connecting...")
         state = .connecting
 
-        // Use TCP with better options
         let params = NWParameters.tcp
         params.prohibitExpensivePaths = false
         params.prohibitedInterfaceTypes = []
@@ -273,14 +249,10 @@ class BluetoothBridge: NSObject, ObservableObject {
 
             switch s {
             case .setup:
-                DispatchQueue.main.async {
-                    self.updateStatus("Setting up connection...")
-                }
+                break
 
             case .preparing:
-                DispatchQueue.main.async {
-                    self.updateStatus("Preparing connection...")
-                }
+                break
 
             case .ready:
                 DispatchQueue.main.async {
@@ -288,12 +260,8 @@ class BluetoothBridge: NSObject, ObservableObject {
                     self.isConnected = true
                     self.updateStatus("Connected!")
                     self.lastError = nil
-
-                    // Start reading
                     self.readLoop(conn: connection)
-
-                    // Send handshake
-                    self.sendPacket(["type": "HANDSHAKE", "platform": "ios", "version": "2.6"])
+                    self.sendPacket(["type": "HANDSHAKE", "platform": "ios", "version": "2.8"])
                 }
 
             case .failed(let err):
@@ -302,8 +270,6 @@ class BluetoothBridge: NSObject, ObservableObject {
                     self.updateError("Connection failed: \(err.localizedDescription)")
                     self.state = .idle
                     self.isConnected = false
-
-                    // Auto-retry
                     self.scheduleReconnect()
                 }
 
@@ -320,12 +286,11 @@ class BluetoothBridge: NSObject, ObservableObject {
                     self.state = .idle
                 }
 
-            default:
+            @unknown default:
                 break
             }
         }
 
-        // Store connection and start
         ioQ.async { [weak self] in
             self?.conn = connection
             self?.buf.removeAll()
@@ -335,16 +300,12 @@ class BluetoothBridge: NSObject, ObservableObject {
 
     // MARK: - Reconnection
 
-    private func scheduleReconnect(immediate: Bool = false) {
+    private func scheduleReconnect() {
         reconnectTimer?.invalidate()
-        
-        // In background, reconnect faster to maintain connection
-        let delay = immediate ? 1.0 : 3.0
-        
-        reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
             guard let self = self else { return }
             if self.state != .connected {
-                self.updateStatus("Reconnecting...")
+                self.updateStatus("Retrying connection...")
                 if let ep = self.lastEndpoint {
                     self.connect(to: ep)
                 } else {
@@ -352,12 +313,6 @@ class BluetoothBridge: NSObject, ObservableObject {
                 }
             }
         }
-    }
-    
-    /// Force immediate reconnection (for background wake)
-    func forceReconnect() {
-        teardown()
-        scheduleReconnect(immediate: true)
     }
 
     private func teardown() {
@@ -384,14 +339,12 @@ class BluetoothBridge: NSObject, ObservableObject {
 
             if let err = err {
                 let code = (err as NSError).code
-                // Ignore expected disconnection codes
                 if code != 57 && code != 54 {
                     print("[Konnekt] Receive error: \(code)")
                 }
                 DispatchQueue.main.async {
                     self.updateError("Connection lost")
                     self.teardown()
-                    self.scheduleReconnect()
                 }
                 return
             }
@@ -409,7 +362,6 @@ class BluetoothBridge: NSObject, ObservableObject {
                 return
             }
 
-            // Continue reading
             if conn === self.conn {
                 self.readLoop(conn: conn)
             }
@@ -421,14 +373,16 @@ class BluetoothBridge: NSObject, ObservableObject {
     private func parse() {
         guard buf.count >= 5 else { return }
 
+        if buf.count > 10_000_000 {
+            buf.removeAll()
+            return
+        }
+
         while buf.count >= 5 {
             let marker = buf[0]
-            let len = (Int(buf[1]) << 24) | (Int(buf[2]) << 16)
-                    | (Int(buf[3]) <<  8) |  Int(buf[4])
+            let len = (Int(buf[1]) << 24) | (Int(buf[2]) << 16) | (Int(buf[3]) << 8) | Int(buf[4])
 
-            // Validate length
             guard len > 0, len <= 1_000_000 else {
-                // Resync: find next marker
                 var found = false
                 for i in 1..<min(buf.count, 100) {
                     if buf[i] == Self.MARK_JSON || buf[i] == Self.MARK_AUDIO {
@@ -467,7 +421,7 @@ class BluetoothBridge: NSObject, ObservableObject {
 
     private func dispatchJSON(_ json: String) {
         guard let raw = json.data(using: .utf8),
-              let obj  = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
+              let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
               let type = obj["type"] as? String else {
             print("[Konnekt] Bad JSON: \(json.prefix(80))")
             return
@@ -479,29 +433,19 @@ class BluetoothBridge: NSObject, ObservableObject {
             guard let self = self else { return }
 
             switch type {
-            // ── Handshake from Android ────────────────────────────────────
             case "HANDSHAKE":
-                // Android sent handshake, respond with our identity
                 let platform = obj["platform"] as? String ?? "unknown"
                 print("[Konnekt] Android handshake: platform=\(platform)")
                 self.updateStatus("Android connected!")
-                // Send our handshake back
                 self.sendPacket([
                     "type": "HANDSHAKE",
                     "platform": "ios",
-                    "version": "2.4",
-                    "audioFormat": [
-                        "sampleRate": 16000,
-                        "bitDepth": 16,
-                        "channels": 1
-                    ]
+                    "version": "2.8"
                 ])
 
             case "HANDSHAKE_ACK":
                 self.updateStatus("Connected & Synced!")
-                self.lastError = nil
 
-            // ── Call Events ──────────────────────────────────────────────
             case "CALL_INCOMING":
                 let id = obj["callId"] as? String ?? UUID().uuidString
                 guard id != self.lastCallId else { return }
@@ -516,33 +460,25 @@ class BluetoothBridge: NSObject, ObservableObject {
                 self.lastCallId = ""
                 self.onCallEnded?()
 
-            // ── SMS Events ───────────────────────────────────────────────
             case "SMS_RECEIVED", "SMS_HISTORY", "SMS", "MESSAGE":
                 var ts = obj["timestamp"] as? TimeInterval ?? Date().timeIntervalSince1970
-                // Handle both milliseconds and seconds
-                if ts < 946684800 { ts *= 1000 }  // Convert s to ms
-                if ts > 2114380800 { ts /= 1000 }  // Convert ms to s (if already in seconds)
+                if ts < 946684800 { ts *= 1000 }
+                if ts > 2114380800 { ts /= 1000 }
 
                 let sender = obj["sender"] as? String ?? obj["name"] as? String ?? "Unknown"
                 let number = obj["number"] as? String ?? obj["from"] as? String ?? ""
-                let body   = obj["body"] as? String ?? obj["message"] as? String ?? ""
+                let body = obj["body"] as? String ?? obj["message"] as? String ?? ""
 
                 self.onSMSReceived?(SMSPacket(
                     sender: sender, number: number, body: body,
                     timestamp: ts, isHistory: type == "SMS_HISTORY"))
 
-            // ── Heartbeat / Keep-alive ───────────────────────────────────
-            case "HEARTBEAT":
-                // Android is checking if we're alive
-                self.sendPacket(["type": "PONG"])
-            case "PING":
+            case "HEARTBEAT", "PING":
                 self.sendPacket(["type": "PONG"])
             case "PONG", "ACK", "SYNC_COMPLETE":
-                // Connection is alive
                 break
-
             default:
-                print("[Konnekt] Unknown message: \(type)")
+                print("[Konnekt] Unknown: \(type)")
             }
         }
     }
@@ -574,11 +510,7 @@ class BluetoothBridge: NSObject, ObservableObject {
         frame.append(payload)
 
         ioQ.async { [weak self] in
-            guard let conn = self?.conn else {
-                print("[Konnekt] Send failed: no connection")
-                return
-            }
-
+            guard let conn = self?.conn else { return }
             conn.send(content: frame, completion: .contentProcessed { err in
                 if let err = err {
                     print("[Konnekt] Send error: \(err)")
@@ -591,19 +523,9 @@ class BluetoothBridge: NSObject, ObservableObject {
 
     func sendCallAnswered() { sendPacket(["type": "CALL_ANSWERED"]) }
     func sendCallRejected() { sendPacket(["type": "CALL_REJECTED"]) }
-    func sendCallEnded()    { sendPacket(["type": "CALL_ENDED"]) }
+    func sendCallEnded() { sendPacket(["type": "CALL_ENDED"]) }
     func sendSMS(to number: String, body: String) {
         sendPacket(["type": "SEND_SMS", "to": number, "body": body])
-    }
-    
-    /// Keep-alive heartbeat for background mode
-    func sendHeartbeat() {
-        guard isConnected else {
-            // No connection - try to reconnect
-            scheduleReconnect(immediate: true)
-            return
-        }
-        sendPacket(["type": "HEARTBEAT", "timestamp": Date().timeIntervalSince1970])
     }
 
     func disconnect() {
