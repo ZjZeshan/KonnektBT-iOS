@@ -17,6 +17,9 @@ class AppState: ObservableObject {
     @Published var isBridgeConnected: Bool = false
     @Published var bridgeStatus: String = "Ready"
     @Published var bridgeError: String?
+    
+    // Timer for bridge observation - stored as property for cleanup
+    private var bridgeObserverTimer: Timer?
 
     init() {
         setupBridgeObserver()
@@ -27,13 +30,21 @@ class AppState: ObservableObject {
         }
     }
     
+    deinit {
+        // Clean up timer when AppState is deallocated
+        bridgeObserverTimer?.invalidate()
+        print("[App] AppState deinit - cleanup complete")
+    }
+    
     private func setupBridgeObserver() {
         // Observe bridge changes manually
-        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
+        // Using Timer stored as property to allow proper cleanup
+        bridgeObserverTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
             guard let self = self else {
                 timer.invalidate()
                 return
             }
+            // Safely update published properties
             self.isBridgeConnected = self.bridge.isConnected
             self.bridgeStatus = self.bridge.connectionStatus
             self.bridgeError = self.bridge.lastError
@@ -70,73 +81,105 @@ class AppState: ObservableObject {
             print("[App] Connection error: \(error)")
         }
 
-        // Incoming call
+        // Incoming call - with error handling
         bridge.onCallIncoming = { [weak self] packet in
             guard let self = self else { return }
-            if self.activeCall?.callId != packet.callId {
+            do {
+                // Guard against duplicate calls
+                guard self.activeCall?.callId != packet.callId else { return }
                 self.activeCall = packet
+                
+                let callerName = packet.caller.isEmpty ? "Unknown" : packet.caller
                 self.callKit.reportIncomingCall(
                     callId: packet.callId,
-                    callerName: packet.caller.isEmpty ? "Unknown" : packet.caller,
+                    callerName: callerName,
                     callerNumber: packet.number)
+            } catch {
+                print("[App] Error handling incoming call: \(error)")
             }
         }
 
         // Call ended
         bridge.onCallEnded = { [weak self] in
             guard let self = self else { return }
-            self.callKit.endCall()
-            self.audioManager.stop()
-            self.activeCall = nil
-            self.isInCall = false
+            do {
+                self.callKit.endCall()
+                self.audioManager.stop()
+                self.activeCall = nil
+                self.isInCall = false
+            } catch {
+                print("[App] Error ending call: \(error)")
+            }
         }
 
-        // SMS received
+        // SMS received - with error handling
         bridge.onSMSReceived = { [weak self] packet in
             guard let self = self else { return }
-            // Simple dedup - check last 10 messages
-            let isDupe = self.smsMessages.prefix(10).contains {
-                $0.number == packet.number && $0.body == packet.body
-            }
-            guard !isDupe else { return }
-            self.smsMessages.insert(packet, at: 0)
-            if self.smsMessages.count > 500 {
-                self.smsMessages = Array(self.smsMessages.prefix(500))
+            do {
+                // Simple dedup - check last 10 messages
+                let isDupe = self.smsMessages.prefix(10).contains {
+                    $0.number == packet.number && $0.body == packet.body
+                }
+                guard !isDupe else { return }
+                
+                self.smsMessages.insert(packet, at: 0)
+                if self.smsMessages.count > 500 {
+                    self.smsMessages = Array(self.smsMessages.prefix(500))
+                }
+            } catch {
+                print("[App] Error handling SMS: \(error)")
             }
         }
 
-        // Audio playback during call
+        // Audio playback during call - with error handling
         bridge.onAudioReceived = { [weak self] data in
-            guard self?.isInCall == true else { return }
-            self?.audioManager.playAudio(data)
+            guard let self = self else { return }
+            guard self.isInCall else { return }
+            do {
+                self.audioManager.playAudio(data)
+            } catch {
+                print("[App] Error playing audio: \(error)")
+            }
         }
 
-        // Call answered by user
+        // Call answered by user - with error handling
         callKit.onCallAnswered = { [weak self] in
             guard let self = self else { return }
-            self.isInCall = true
-            self.audioManager.start()
-            self.bridge.sendCallAnswered()
-            self.audioManager.onCapturedAudio = { [weak self] data in
-                self?.bridge.sendAudioFrame(data)
+            do {
+                self.isInCall = true
+                self.audioManager.start()
+                self.bridge.sendCallAnswered()
+                self.audioManager.onCapturedAudio = { [weak self] data in
+                    self?.bridge.sendAudioFrame(data)
+                }
+            } catch {
+                print("[App] Error answering call: \(error)")
             }
         }
 
         // Call rejected
         callKit.onCallRejected = { [weak self] in
             guard let self = self else { return }
-            self.bridge.sendCallRejected()
-            self.activeCall = nil
-            self.isInCall = false
+            do {
+                self.bridge.sendCallRejected()
+                self.activeCall = nil
+                self.isInCall = false
+            } catch {
+                print("[App] Error rejecting call: \(error)")
+            }
         }
 
         // Call ended from UI
         callKit.onCallEnded = { [weak self] in
             guard let self = self else { return }
-            self.bridge.sendCallEnded()
-            self.audioManager.stop()
-            self.activeCall = nil
-            self.isInCall = false
+            do {
+                self.bridge.sendCallEnded()
+                self.audioManager.stop()
+                self.activeCall = nil
+                self.isInCall = false
+            } catch {
+                print("[App] Error ending call from UI: \(error)")
+            }
         }
     }
 }
