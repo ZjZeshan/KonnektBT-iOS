@@ -5,8 +5,8 @@
     <key>CFBundleDisplayName</key><string>KONNEKT</string>
     <key>CFBundleIdentifier</key><string>com.zjzeshan.konnektbt</string>
     <key>CFBundleName</key><string>KonnektBT</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleShortVersionString</key><string>2.0</string>
     <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSRequiresIPhoneOS</key><true/>
@@ -17,18 +17,29 @@
     <key>UISupportedInterfaceOrientations</key>
     <array><string>UIInterfaceOrientationPortrait</string></array>
     <key>UIApplicationSupportsIndirectInputEvents</key><true/>
+    
+    <!-- Privacy Descriptions -->
     <key>NSMicrophoneUsageDescription</key>
     <string>KONNEKT needs microphone access to relay your voice during forwarded calls</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>KONNEKT connects to your Android phone on the local WiFi to bridge calls and SMS</string>
+    <string>KONNEKT connects to your Android phone on the local WiFi network to bridge calls and SMS messages</string>
     <key>NSBonjourServices</key>
-    <array><string>_konnekt._tcp</string></array>
+    <array>
+        <string>_konnekt._tcp</string>
+        <string>_http._tcp</string>
+    </array>
+    
+    <!-- Background Modes -->
     <key>UIBackgroundModes</key>
     <array>
         <string>voip</string>
         <string>audio</string>
         <string>fetch</string>
         <string>remote-notification</string>
+        <string>processing</string>
     </array>
+    
+    <!-- Required for local network access -->
+    <key>NSAllowsLocalNetworking</key><true/>
 </dict>
 </plist>

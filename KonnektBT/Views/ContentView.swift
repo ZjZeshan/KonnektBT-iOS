@@ -1,6 +1,5 @@
 // KonnektBT/Views/ContentView.swift
 import SwiftUI
-import Network
 
 // ── AppState ──────────────────────────────────────────────────────────────────
 class AppState: ObservableObject {
@@ -12,39 +11,34 @@ class AppState: ObservableObject {
     @Published var activeCall:  CallPacket?
     @Published var isInCall     = false
 
-    // FIXED: Thread-safe state management
-    private let stateQueue = DispatchQueue(label: "com.konnekt.appstate")
-
     init() {
         setupCallbacks()
-        // Small delay so NWPathMonitor fires first and we don't double-connect
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        // Start discovery after network monitor initializes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.bridge.startDiscovery()
         }
     }
 
     func handleBackground() {
-        print("[AppState] Background — keeping connection alive")
+        // Keep connection alive in background
     }
 
     func handleForeground() {
         if !bridge.isConnected {
-            print("[AppState] Foreground — reconnecting")
             bridge.startDiscovery()
         }
     }
 
     private func setupCallbacks() {
-        // All bridge callbacks already arrive on main thread
+        // Connection errors
+        bridge.onConnectionError = { [weak self] error in
+            print("[App] Connection error: \(error)")
+        }
+
+        // Incoming call
         bridge.onCallIncoming = { [weak self] packet in
             guard let self = self else { return }
-            // FIXED: Thread-safe state check
-            self.stateQueue.sync {
-                // Don't report if we already have this call active
-                guard self.activeCall?.callId != packet.callId else { return }
-            }
-
-            DispatchQueue.main.async {
+            if self.activeCall?.callId != packet.callId {
                 self.activeCall = packet
                 self.callKit.reportIncomingCall(
                     callId: packet.callId,
@@ -53,93 +47,62 @@ class AppState: ObservableObject {
             }
         }
 
+        // Call ended
         bridge.onCallEnded = { [weak self] in
             guard let self = self else { return }
-            self.stateQueue.sync {
-                self.isInCall = false
-                self.activeCall = nil
-            }
             self.callKit.endCall()
             self.audioManager.stop()
+            self.activeCall = nil
+            self.isInCall = false
         }
 
+        // SMS received
         bridge.onSMSReceived = { [weak self] packet in
             guard let self = self else { return }
-            DispatchQueue.main.async {
-                // FIXED: Better dedup by checking last 5 messages only for performance
-                let recentWindow = self.smsMessages.prefix(5)
-                let isDupe = recentWindow.contains {
-                    $0.number == packet.number &&
-                    $0.body == packet.body &&
-                    abs($0.timestamp - packet.timestamp) < 2000
-                }
-                guard !isDupe else { return }
-                self.smsMessages.insert(packet, at: 0)
-                // Limit history to 500 messages
-                if self.smsMessages.count > 500 {
-                    self.smsMessages = Array(self.smsMessages.prefix(500))
-                }
+            // Simple dedup - check last 10 messages
+            let isDupe = self.smsMessages.prefix(10).contains {
+                $0.number == packet.number && $0.body == packet.body
+            }
+            guard !isDupe else { return }
+            self.smsMessages.insert(packet, at: 0)
+            if self.smsMessages.count > 500 {
+                self.smsMessages = Array(self.smsMessages.prefix(500))
             }
         }
 
-        // Audio arrives on main thread — only play if we're actually in a call
+        // Audio playback during call
         bridge.onAudioReceived = { [weak self] data in
-            self?.stateQueue.sync {
-                guard self?.isInCall == true else { return }
-            }
+            guard self?.isInCall == true else { return }
             self?.audioManager.playAudio(data)
         }
 
-        // FIXED: CallKit callbacks with proper cleanup
-        var hasCallAnsweredCallback = false
-
+        // Call answered by user
         callKit.onCallAnswered = { [weak self] in
             guard let self = self else { return }
-            self.stateQueue.sync { self.isInCall = true }
-
-            // FIXED: Prevent multiple callbacks from registering multiple times
-            guard !hasCallAnsweredCallback else { return }
-            hasCallAnsweredCallback = true
-
+            self.isInCall = true
             self.audioManager.start()
             self.bridge.sendCallAnswered()
-
-            // FIXED: Store capture callback properly, remove on cleanup
             self.audioManager.onCapturedAudio = { [weak self] data in
                 self?.bridge.sendAudioFrame(data)
             }
         }
 
+        // Call rejected
         callKit.onCallRejected = { [weak self] in
             guard let self = self else { return }
-            self.stateQueue.sync {
-                self.isInCall = false
-                self.activeCall = nil
-            }
             self.bridge.sendCallRejected()
+            self.activeCall = nil
+            self.isInCall = false
         }
 
+        // Call ended from UI
         callKit.onCallEnded = { [weak self] in
             guard let self = self else { return }
-            self.stateQueue.sync {
-                self.isInCall = false
-                self.activeCall = nil
-            }
             self.bridge.sendCallEnded()
             self.audioManager.stop()
+            self.activeCall = nil
+            self.isInCall = false
         }
-
-        // FIXED: Handle send errors
-        bridge.onSendError = { error in
-            print("[Bridge] Send error: \(error)")
-        }
-    }
-
-    // FIXED: Helper to check if in call (thread-safe)
-    func checkIsInCall() -> Bool {
-        var result = false
-        stateQueue.sync { result = isInCall }
-        return result
     }
 }
 
@@ -149,12 +112,12 @@ struct ContentView: View {
     var body: some View {
         TabView {
             HomeView()
-                .tabItem { Label("Home",     systemImage: "house.fill") }
+                .tabItem { Label("Home", systemImage: "house.fill") }
             SMSInboxView()
                 .tabItem { Label("Messages", systemImage: "message.fill") }
                 .badge(appState.smsMessages.count)
             PairingView()
-                .tabItem { Label("Pair",     systemImage: "link") }
+                .tabItem { Label("Pair", systemImage: "link") }
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gear") }
         }
@@ -183,7 +146,9 @@ struct HomeView: View {
                                         subtitle: "\(appState.smsMessages.count) messages",
                                         active: appState.bridge.isConnected)
                         }
-                        if !appState.bridge.isConnected { SetupGuideView() }
+                        if !appState.bridge.isConnected {
+                            SetupGuideView()
+                        }
                     }
                     .padding(20)
                 }
@@ -196,16 +161,31 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Circle()
-                    .fill(appState.bridge.isConnected ? Color(hex: "#00e5a0") : Color.orange)
+                    .fill(statusColor)
                     .frame(width: 10, height: 10)
-                Text(appState.bridge.isConnected ? "ANDROID CONNECTED ✓" : "SEARCHING...")
+                Text(statusText)
                     .font(.system(.caption, design: .monospaced))
-                    .foregroundColor(appState.bridge.isConnected ? Color(hex: "#00e5a0") : .orange)
+                    .foregroundColor(statusColor)
             }
+
+            // Real-time status
+            Text(appState.bridge.connectionStatus)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundColor(.gray)
+
+            // Error display
+            if let error = appState.bridge.lastError {
+                Text(error)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(.red)
+            }
+
             if !appState.bridge.isConnected {
-                Button("Retry Connection") { appState.bridge.startDiscovery() }
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundColor(Color(hex: "#00e5a0"))
+                Button("Retry") {
+                    appState.bridge.startDiscovery()
+                }
+                .font(.system(.caption, design: .monospaced))
+                .foregroundColor(Color(hex: "#00e5a0"))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -213,9 +193,15 @@ struct HomeView: View {
         .background(Color(hex: "#12151c"))
         .cornerRadius(20)
         .overlay(RoundedRectangle(cornerRadius: 20)
-            .stroke(appState.bridge.isConnected
-                    ? Color(hex: "#00e5a0").opacity(0.3)
-                    : Color.orange.opacity(0.3), lineWidth: 1))
+            .stroke(statusColor.opacity(0.3), lineWidth: 1))
+    }
+
+    var statusColor: Color {
+        appState.bridge.isConnected ? Color(hex: "#00e5a0") : Color.orange
+    }
+
+    var statusText: String {
+        appState.bridge.isConnected ? "ANDROID CONNECTED ✓" : "SEARCHING..."
     }
 }
 
@@ -225,11 +211,6 @@ struct ActiveCallCard: View {
     @EnvironmentObject var appState: AppState
     @State private var elapsed = 0
     let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-
-    // FIXED: Reset timer when call ends
-    private func resetTimer() {
-        elapsed = 0
-    }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -249,8 +230,8 @@ struct ActiveCallCard: View {
         .overlay(RoundedRectangle(cornerRadius: 20)
             .stroke(Color(hex: "#00e5a0").opacity(0.3), lineWidth: 1))
         .onReceive(timer) { _ in elapsed += 1 }
-        .onDisappear { resetTimer() }
     }
+
     func formatTime(_ s: Int) -> String {
         String(format: "%02d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
     }
@@ -273,14 +254,17 @@ struct FeatureCard: View {
 }
 
 struct SetupGuideView: View {
-    let steps = ["1. Install KONNEKT on Android",
-                 "2. Connect both phones to same WiFi",
-                 "3. Open KONNEKT on Android → tap Start",
-                 "4. Tap Pair tab below"]
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("SETUP GUIDE").font(.system(.caption, design: .monospaced)).foregroundColor(.gray)
-            ForEach(steps, id: \.self) { Text($0).font(.system(.caption)).foregroundColor(.gray) }
+            Text("1. Install KONNEKT on Android")
+                .font(.system(.caption)).foregroundColor(.gray)
+            Text("2. Connect both phones to same WiFi")
+                .font(.system(.caption)).foregroundColor(.gray)
+            Text("3. Open KONNEKT on Android → tap Start")
+                .font(.system(.caption)).foregroundColor(.gray)
+            Text("4. Go to Pair tab → Auto-Scan or enter IP")
+                .font(.system(.caption)).foregroundColor(.gray)
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(16)
         .background(Color(hex: "#12151c")).cornerRadius(16)
@@ -291,15 +275,11 @@ struct SetupGuideView: View {
 struct SMSInboxView: View {
     @EnvironmentObject var appState: AppState
 
-    // FIXED: Memoize threads to prevent recalculation on every render
-    @State private var cachedThreads: [[SMSPacket]] = []
-
     var threads: [[SMSPacket]] {
         let grouped = Dictionary(grouping: appState.smsMessages, by: { $0.number })
-        let result = grouped.values
+        return grouped.values
             .map { $0.sorted { $0.timestamp > $1.timestamp } }
             .sorted { ($0.first?.timestamp ?? 0) > ($1.first?.timestamp ?? 0) }
-        return result
     }
 
     var body: some View {
@@ -357,52 +337,37 @@ struct SMSThreadView: View {
     let messages: [SMSPacket]
     @EnvironmentObject var appState: AppState
     @State private var replyText = ""
-    @State private var messageCount = 0
 
     var sorted: [SMSPacket] { messages.sorted { $0.timestamp < $1.timestamp } }
-
-    // FIXED: Track last message ID for auto-scroll
-    @State private var lastMessageId: UUID?
 
     var body: some View {
         ZStack {
             Color(hex: "#0a0c10").ignoresSafeArea()
             VStack {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 8) {
-                            ForEach(sorted) { msg in
-                                HStack {
-                                    if msg.isHistory { Spacer(minLength: 40) }
-                                    Text(msg.body)
-                                        .padding(.horizontal, 14).padding(.vertical, 10)
-                                        .background(msg.isHistory ? Color(hex: "#00e5a0") : Color(hex: "#1a1e28"))
-                                        .foregroundColor(msg.isHistory ? Color(hex: "#001a0d") : .white)
-                                        .cornerRadius(16)
-                                    if !msg.isHistory { Spacer(minLength: 40) }
-                                }
-                                .padding(.horizontal).id(msg.id)
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(sorted) { msg in
+                            HStack {
+                                if msg.isHistory { Spacer(minLength: 40) }
+                                Text(msg.body)
+                                    .padding(.horizontal, 14).padding(.vertical, 10)
+                                    .background(msg.isHistory ? Color(hex: "#00e5a0") : Color(hex: "#1a1e28"))
+                                    .foregroundColor(msg.isHistory ? Color(hex: "#001a0d") : .white)
+                                    .cornerRadius(16)
+                                if !msg.isHistory { Spacer(minLength: 40) }
                             }
-                        }.padding(.vertical)
-                    }
-                    // FIXED: Proper scroll-to-bottom on new messages
-                    .onChange(of: sorted.count) { newCount in
-                        if newCount > messageCount, let last = sorted.last {
-                            withAnimation(.easeOut(duration: 0.3)) {
-                                proxy.scrollTo(last.id, anchor: .bottom)
-                            }
+                            .padding(.horizontal)
                         }
-                        messageCount = newCount
-                        lastMessageId = sorted.last?.id
-                    }
+                    }.padding(.vertical)
                 }
                 HStack(spacing: 10) {
                     TextField("Reply...", text: $replyText)
                         .padding(.horizontal, 14).padding(.vertical, 10)
                         .background(Color(hex: "#12151c")).cornerRadius(20).foregroundColor(.white)
                     Button {
-                        guard !replyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                        appState.bridge.sendSMS(to: number, body: replyText.trimmingCharacters(in: .whitespacesAndNewlines))
+                        let text = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !text.isEmpty else { return }
+                        appState.bridge.sendSMS(to: number, body: text)
                         replyText = ""
                     } label: {
                         Image(systemName: "arrow.up.circle.fill")
@@ -413,10 +378,6 @@ struct SMSThreadView: View {
         }
         .navigationTitle(messages.first?.sender ?? number)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            messageCount = sorted.count
-            lastMessageId = sorted.last?.id
-        }
     }
 }
 
@@ -424,16 +385,16 @@ struct SMSThreadView: View {
 struct PairingView: View {
     @EnvironmentObject var appState: AppState
     @State private var ipAddress = ""
-    @State private var status = "Tap Scan or enter Android IP manually"
-    @State private var showInvalidIPAlert = false
+    @State private var port = "43210"
+    @State private var showError = false
+    @State private var errorMessage = ""
 
-    // FIXED: IP validation pattern
-    private var isValidIP: Bool {
+    var isValidIP: Bool {
         let parts = ipAddress.split(separator: ".")
         guard parts.count == 4 else { return false }
         return parts.allSatisfy { part in
-            guard let num = Int(part) else { return false }
-            return num >= 0 && num <= 255
+            guard let num = Int(part), num >= 0, num <= 255 else { return false }
+            return true
         }
     }
 
@@ -444,21 +405,31 @@ struct PairingView: View {
                 ScrollView {
                     VStack(spacing: 20) {
 
-                        // ── Connection status ──────────────────────────────
-                        HStack(spacing: 10) {
-                            Circle()
-                                .fill(appState.bridge.isConnected ? Color(hex: "#00e5a0") : Color.orange)
-                                .frame(width: 10, height: 10)
-                            Text(appState.bridge.isConnected ? "Android Connected ✓" : "Not Connected")
-                                .foregroundColor(.white).font(.subheadline)
+                        // ── Connection Status ──────────────────────────────
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Circle()
+                                    .fill(appState.bridge.isConnected ? Color(hex: "#00e5a0") : Color.orange)
+                                    .frame(width: 10, height: 10)
+                                Text(appState.bridge.isConnected ? "Connected ✓" : "Not Connected")
+                                    .foregroundColor(.white)
+                            }
+                            Text(appState.bridge.connectionStatus)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundColor(.gray)
+                            if let error = appState.bridge.lastError {
+                                Text(error)
+                                    .font(.system(.caption2))
+                                    .foregroundColor(.red)
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(16)
                         .background(Color(hex: "#12151c")).cornerRadius(14)
 
-                        // ── iPhone's own IP (for typing into Android app) ──
+                        // ── iPhone IP ─────────────────────────────────────
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("THIS IPHONE'S IP ADDRESS")
+                            Text("YOUR iPHONE IP")
                                 .font(.system(.caption2, design: .monospaced))
                                 .foregroundColor(Color(hex: "#6b7280"))
                             HStack {
@@ -473,18 +444,16 @@ struct PairingView: View {
                                         .foregroundColor(Color(hex: "#00e5a0"))
                                 }
                             }
-                            Text("Type this IP into your Android KONNEKT app")
-                                .font(.caption2)
-                                .foregroundColor(Color(hex: "#6b7280"))
+                            Text("Tell Android app this IP")
+                                .font(.caption2).foregroundColor(Color(hex: "#6b7280"))
                             Button {
                                 appState.bridge.refreshLocalIP()
                             } label: {
                                 HStack(spacing: 6) {
                                     Image(systemName: "arrow.clockwise")
-                                    Text("Refresh IP")
+                                    Text("Refresh")
                                 }
-                                .font(.caption)
-                                .foregroundColor(Color(hex: "#00e5a0"))
+                                .font(.caption).foregroundColor(Color(hex: "#00e5a0"))
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -494,9 +463,8 @@ struct PairingView: View {
                         .overlay(RoundedRectangle(cornerRadius: 14)
                             .stroke(Color(hex: "#00e5a0").opacity(0.3), lineWidth: 1))
 
-                        // ── Auto scan ──────────────────────────────────────
+                        // ── Auto Scan ─────────────────────────────────────
                         Button {
-                            status = "Scanning for Android device..."
                             appState.bridge.startDiscovery()
                         } label: {
                             HStack {
@@ -511,37 +479,41 @@ struct PairingView: View {
 
                         Divider().background(Color(hex: "#22273a"))
 
-                        // ── Manual IP (connect iPhone → Android) ───────────
+                        // ── Manual IP ────────────────────────────────────
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("CONNECT TO ANDROID IP")
+                            Text("CONNECT BY IP")
                                 .font(.system(.caption2, design: .monospaced))
                                 .foregroundColor(Color(hex: "#6b7280"))
-                            Text("Use this if Android app shows its IP")
-                                .font(.caption2).foregroundColor(.gray)
-                            TextField("192.168.x.x", text: $ipAddress)
-                                .keyboardType(.decimalPad).padding(14)
+
+                            TextField("IP Address (e.g., 192.168.1.100)", text: $ipAddress)
+                                .keyboardType(.decimalPad)
+                                .padding(14)
                                 .background(Color(hex: "#12151c")).cornerRadius(12)
                                 .overlay(RoundedRectangle(cornerRadius: 12)
-                                    .stroke(isValidIP || ipAddress.isEmpty ? Color(hex: "#22273a") : Color.red, lineWidth: 1))
+                                    .stroke(ipAddress.isEmpty || isValidIP ? Color(hex: "#22273a") : Color.red, lineWidth: 1))
                                 .foregroundColor(.white)
 
-                            // FIXED: Show validation error
-                            if !ipAddress.isEmpty && !isValidIP {
-                                Text("Invalid IP format (e.g., 192.168.1.100)")
-                                    .font(.caption2).foregroundColor(.red)
-                            }
+                            TextField("Port (default: 43210)", text: $port)
+                                .keyboardType(.numberPad)
+                                .padding(14)
+                                .background(Color(hex: "#12151c")).cornerRadius(12)
+                                .overlay(RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color(hex: "#22273a"), lineWidth: 1))
+                                .foregroundColor(.white)
 
                             Button {
                                 guard !ipAddress.isEmpty else { return }
                                 guard isValidIP else {
-                                    showInvalidIPAlert = true
+                                    errorMessage = "Invalid IP address"
+                                    showError = true
                                     return
                                 }
-                                appState.bridge.connectToIP(ipAddress)
-                                status = "Connecting to \(ipAddress)..."
+                                let p = UInt16(port) ?? 43210
+                                appState.bridge.connectToIP(ipAddress, port: p)
                             } label: {
-                                Text("Connect to Android")
-                                    .foregroundColor(.white).frame(maxWidth: .infinity).padding()
+                                Text("Connect")
+                                    .foregroundColor(.white)
+                                    .frame(maxWidth: .infinity).padding()
                                     .background(Color(hex: "#12151c")).cornerRadius(14)
                                     .overlay(RoundedRectangle(cornerRadius: 14)
                                         .stroke(Color(hex: "#22273a"), lineWidth: 1))
@@ -550,16 +522,12 @@ struct PairingView: View {
                             .opacity(ipAddress.isEmpty ? 0.5 : 1.0)
                         }
 
-                        Text(status)
-                            .font(.caption).foregroundColor(.gray)
-                            .multilineTextAlignment(.center)
-
-                        // ── Hotspot note ───────────────────────────────────
+                        // ── Hotspot Note ─────────────────────────────────
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("📱 USING MOBILE HOTSPOT?")
+                            Text("📱 MOBILE HOTSPOT?")
                                 .font(.system(.caption2, design: .monospaced))
                                 .foregroundColor(.orange)
-                            Text("If you're sharing iPhone's connection:\n1. Enable Personal Hotspot on iPhone\n2. Connect Android to iPhone's hotspot\n3. Your IP above will show the hotspot address\n4. Type that IP into Android KONNEKT app")
+                            Text("1. Enable Personal Hotspot on iPhone\n2. Connect Android to iPhone's hotspot\n3. Use iPhone's hotspot IP above\n4. Enter that IP in Android app")
                                 .font(.caption2).foregroundColor(.gray)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -576,10 +544,10 @@ struct PairingView: View {
             }
             .navigationTitle("Pair Devices")
             .onAppear { appState.bridge.refreshLocalIP() }
-            .alert("Invalid IP Address", isPresented: $showInvalidIPAlert) {
+            .alert("Error", isPresented: $showError) {
                 Button("OK", role: .cancel) { }
             } message: {
-                Text("Please enter a valid IP address (e.g., 192.168.1.100)")
+                Text(errorMessage)
             }
         }
     }
@@ -597,7 +565,7 @@ struct SettingsView: View {
                     Text("KONNEKT").font(.system(size: 28, weight: .bold)).foregroundColor(.white)
                     Text("Android SIM → iPhone Bridge")
                         .font(.system(.caption, design: .monospaced)).foregroundColor(.gray)
-                    Text("Version 1.0 (Fixed)")
+                    Text("Version 2.0")
                         .font(.caption2).foregroundColor(Color(hex: "#6b7280"))
                 }
             }
