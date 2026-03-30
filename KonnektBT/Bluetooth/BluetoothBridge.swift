@@ -255,6 +255,7 @@ class BluetoothBridge: NSObject, ObservableObject {
                 break
 
             case .ready:
+                print("[Konnekt] Connection .ready received")
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
                     // Additional safety - verify we're in a valid state to connect
@@ -262,12 +263,14 @@ class BluetoothBridge: NSObject, ObservableObject {
                         print("[Konnekt] Already connected or invalid state, ignoring")
                         return
                     }
+                    print("[Konnekt] Setting state to connected, starting readLoop and sending HANDSHAKE")
                     self.state = .connected
                     self.isConnected = true
                     self.updateStatus("Connected!")
                     self.lastError = nil
                     self.readLoop(conn: connection)
                     self.sendPacket(["type": "HANDSHAKE", "platform": "ios", "version": "2.8"])
+                    print("[Konnekt] HANDSHAKE sent")
                 }
 
             case .failed(let err):

@@ -22,32 +22,47 @@ class AppState: ObservableObject {
     private var bridgeObserverTimer: Timer?
 
     init() {
+        print("[AppState] INIT - starting setup")
         setupBridgeObserver()
+        print("[AppState] setupBridgeObserver done")
         setupCallbacks()
+        print("[AppState] setupCallbacks done")
         // Start discovery after network monitor initializes
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            print("[AppState] Starting discovery...")
             self?.bridge.startDiscovery()
         }
+        print("[AppState] INIT complete")
     }
     
     deinit {
         // Clean up timer when AppState is deallocated
         bridgeObserverTimer?.invalidate()
-        print("[App] AppState deinit - cleanup complete")
+        print("[AppState] DEINIT - cleanup complete")
     }
     
     private func setupBridgeObserver() {
+        print("[AppState] Creating bridge observer timer")
         // Observe bridge changes manually
         // Using Timer stored as property to allow proper cleanup
         bridgeObserverTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
             guard let self = self else {
+                print("[AppState] Timer fired but self is nil, invalidating")
                 timer.invalidate()
                 return
             }
             // Safely update published properties
-            self.isBridgeConnected = self.bridge.isConnected
-            self.bridgeStatus = self.bridge.connectionStatus
-            self.bridgeError = self.bridge.lastError
+            let newConnected = self.bridge.isConnected
+            let newStatus = self.bridge.connectionStatus
+            let newError = self.bridge.lastError
+            
+            if self.isBridgeConnected != newConnected || self.bridgeStatus != newStatus {
+                print("[AppState] Bridge state changed: connected=\(newConnected), status=\(newStatus)")
+            }
+            
+            self.isBridgeConnected = newConnected
+            self.bridgeStatus = newStatus
+            self.bridgeError = newError
         }
     }
 
@@ -187,13 +202,19 @@ class AppState: ObservableObject {
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    
+    // Safe message count to avoid crashes during updates
+    private var messageCount: Int {
+        appState.smsMessages.count
+    }
+    
     var body: some View {
         TabView {
             HomeView()
                 .tabItem { Label("Home", systemImage: "house.fill") }
             SMSInboxView()
                 .tabItem { Label("Messages", systemImage: "message.fill") }
-                .badge(appState.smsMessages.count)
+                .badge(messageCount > 0 ? messageCount : nil)
             PairingView()
                 .tabItem { Label("Pair", systemImage: "link") }
             SettingsView()
@@ -356,12 +377,16 @@ struct ActiveCallCard: View {
 // ── Feature + Setup ───────────────────────────────────────────────────────────
 struct FeatureCard: View {
     let icon: String; let title: String; let subtitle: String; let active: Bool
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(icon).font(.title2)
             Text(title).font(.system(size: 14, weight: .bold)).foregroundColor(.white)
             Text(subtitle).font(.system(.caption2, design: .monospaced)).foregroundColor(.gray)
-            Circle().fill(active ? Color(hex: "#00e5a0") : .gray).frame(width: 8, height: 8)
+            // Safe Circle with ternary operator
+            Circle()
+                .fill(active ? Color(hex: "#00e5a0") : Color.gray)
+                .frame(width: 8, height: 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(16)
         .background(Color(hex: "#12151c")).cornerRadius(16)
@@ -391,11 +416,19 @@ struct SetupGuideView: View {
 struct SMSInboxView: View {
     @EnvironmentObject var appState: AppState
 
+    // Safe computed property for threads
     var threads: [[SMSPacket]] {
-        let grouped = Dictionary(grouping: appState.smsMessages, by: { $0.number })
-        return grouped.values
+        // Take a snapshot to avoid concurrent modification
+        let messages = appState.smsMessages
+        guard !messages.isEmpty else { return [] }
+        
+        let grouped = Dictionary(grouping: messages, by: { $0.number })
+        let sortedThreads = grouped.values
             .map { $0.sorted { $0.timestamp > $1.timestamp } }
             .sorted { ($0.first?.timestamp ?? 0) > ($1.first?.timestamp ?? 0) }
+        
+        // Filter out any empty threads as a safety measure
+        return sortedThreads.filter { !$0.isEmpty }
     }
 
     var body: some View {
@@ -410,13 +443,17 @@ struct SMSInboxView: View {
                             .font(.caption).foregroundColor(Color(hex: "#6b7280"))
                     }
                 } else {
-                    List(threads, id: \.first?.id) { thread in
-                        if let latest = thread.first {
-                            NavigationLink(destination: SMSThreadView(
-                                number: latest.number, messages: thread)) {
-                                SMSRowView(packet: latest)
+                    // Use safe ForEach with indices
+                    List {
+                        ForEach(threads.indices, id: \.self) { index in
+                            let thread = threads[index]
+                            if let latest = thread.first {
+                                NavigationLink(destination: SMSThreadView(
+                                    number: latest.number, messages: thread)) {
+                                    SMSRowView(packet: latest)
+                                }
+                                .listRowBackground(Color(hex: "#12151c"))
                             }
-                            .listRowBackground(Color(hex: "#12151c"))
                         }
                     }
                     .listStyle(.plain).scrollContentBackground(.hidden)
@@ -695,9 +732,15 @@ extension Color {
     init(hex: String) {
         let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
         var int: UInt64 = 0
-        Scanner(string: hex).scanHexInt64(&int)
-        self.init(red: Double((int>>16)&0xFF)/255,
-                  green: Double((int>>8)&0xFF)/255,
-                  blue: Double(int&0xFF)/255)
+        // Safely handle invalid hex strings
+        guard Scanner(string: hex).scanHexInt64(&int) else {
+            // Default to dark gray if invalid
+            self.init(red: 0.1, green: 0.1, blue: 0.1)
+            return
+        }
+        let r = Double((int >> 16) & 0xFF) / 255.0
+        let g = Double((int >> 8) & 0xFF) / 255.0
+        let b = Double(int & 0xFF) / 255.0
+        self.init(red: r, green: g, blue: b)
     }
 }
