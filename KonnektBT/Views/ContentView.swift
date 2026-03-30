@@ -96,105 +96,77 @@ class AppState: ObservableObject {
             print("[App] Connection error: \(error)")
         }
 
-        // Incoming call - with error handling
+        // Incoming call
         bridge.onCallIncoming = { [weak self] packet in
             guard let self = self else { return }
-            do {
-                // Guard against duplicate calls
-                guard self.activeCall?.callId != packet.callId else { return }
-                self.activeCall = packet
-                
-                let callerName = packet.caller.isEmpty ? "Unknown" : packet.caller
-                self.callKit.reportIncomingCall(
-                    callId: packet.callId,
-                    callerName: callerName,
-                    callerNumber: packet.number)
-            } catch {
-                print("[App] Error handling incoming call: \(error)")
-            }
+            // Guard against duplicate calls
+            guard self.activeCall?.callId != packet.callId else { return }
+            self.activeCall = packet
+            
+            let callerName = packet.caller.isEmpty ? "Unknown" : packet.caller
+            self.callKit.reportIncomingCall(
+                callId: packet.callId,
+                callerName: callerName,
+                callerNumber: packet.number)
         }
 
         // Call ended
         bridge.onCallEnded = { [weak self] in
             guard let self = self else { return }
-            do {
-                self.callKit.endCall()
-                self.audioManager.stop()
-                self.activeCall = nil
-                self.isInCall = false
-            } catch {
-                print("[App] Error ending call: \(error)")
-            }
+            self.callKit.endCall()
+            self.audioManager.stop()
+            self.activeCall = nil
+            self.isInCall = false
         }
 
-        // SMS received - with error handling
+        // SMS received
         bridge.onSMSReceived = { [weak self] packet in
             guard let self = self else { return }
-            do {
-                // Simple dedup - check last 10 messages
-                let isDupe = self.smsMessages.prefix(10).contains {
-                    $0.number == packet.number && $0.body == packet.body
-                }
-                guard !isDupe else { return }
-                
-                self.smsMessages.insert(packet, at: 0)
-                if self.smsMessages.count > 500 {
-                    self.smsMessages = Array(self.smsMessages.prefix(500))
-                }
-            } catch {
-                print("[App] Error handling SMS: \(error)")
+            // Simple dedup - check last 10 messages
+            let isDupe = self.smsMessages.prefix(10).contains {
+                $0.number == packet.number && $0.body == packet.body
+            }
+            guard !isDupe else { return }
+            
+            self.smsMessages.insert(packet, at: 0)
+            if self.smsMessages.count > 500 {
+                self.smsMessages = Array(self.smsMessages.prefix(500))
             }
         }
 
-        // Audio playback during call - with error handling
+        // Audio playback during call
         bridge.onAudioReceived = { [weak self] data in
             guard let self = self else { return }
             guard self.isInCall else { return }
-            do {
-                self.audioManager.playAudio(data)
-            } catch {
-                print("[App] Error playing audio: \(error)")
-            }
+            self.audioManager.playAudio(data)
         }
 
-        // Call answered by user - with error handling
+        // Call answered by user
         callKit.onCallAnswered = { [weak self] in
             guard let self = self else { return }
-            do {
-                self.isInCall = true
-                self.audioManager.start()
-                self.bridge.sendCallAnswered()
-                self.audioManager.onCapturedAudio = { [weak self] data in
-                    self?.bridge.sendAudioFrame(data)
-                }
-            } catch {
-                print("[App] Error answering call: \(error)")
+            self.isInCall = true
+            self.audioManager.start()
+            self.bridge.sendCallAnswered()
+            self.audioManager.onCapturedAudio = { [weak self] data in
+                self?.bridge.sendAudioFrame(data)
             }
         }
 
         // Call rejected
         callKit.onCallRejected = { [weak self] in
             guard let self = self else { return }
-            do {
-                self.bridge.sendCallRejected()
-                self.activeCall = nil
-                self.isInCall = false
-            } catch {
-                print("[App] Error rejecting call: \(error)")
-            }
+            self.bridge.sendCallRejected()
+            self.activeCall = nil
+            self.isInCall = false
         }
 
         // Call ended from UI
         callKit.onCallEnded = { [weak self] in
             guard let self = self else { return }
-            do {
-                self.bridge.sendCallEnded()
-                self.audioManager.stop()
-                self.activeCall = nil
-                self.isInCall = false
-            } catch {
-                print("[App] Error ending call from UI: \(error)")
-            }
+            self.bridge.sendCallEnded()
+            self.audioManager.stop()
+            self.activeCall = nil
+            self.isInCall = false
         }
     }
 }
@@ -214,7 +186,7 @@ struct ContentView: View {
                 .tabItem { Label("Home", systemImage: "house.fill") }
             SMSInboxView()
                 .tabItem { Label("Messages", systemImage: "message.fill") }
-                .badge(messageCount > 0 ? messageCount : nil)
+                .badge(messageCount)
             PairingView()
                 .tabItem { Label("Pair", systemImage: "link") }
             SettingsView()

@@ -19,9 +19,9 @@ struct KonnektBTApp: App {
                     logger.info("KonnektBT App appeared")
                 }
         }
-        .onChange(of: scenePhase) { phase in
-            logger.info("Scene phase changed to: \(phase.rawValue)")
-            switch phase {
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            logger.info("Scene phase changed to: \(newPhase.rawValue)")
+            switch newPhase {
             case .background:
                 appState.handleBackground()
             case .active:

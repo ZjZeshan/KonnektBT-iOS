@@ -412,17 +412,8 @@ class BluetoothBridge: NSObject, ObservableObject {
             // Additional safety - verify we have valid buffer access
             guard buf.count > 0 else { break }
             
-            let marker: UInt8
-            let len: Int
-            
-            do {
-                marker = buf[0]
-                len = (Int(buf[1]) << 24) | (Int(buf[2]) << 16) | (Int(buf[3]) << 8) | Int(buf[4])
-            } catch {
-                print("[Konnekt] Buffer access error, clearing")
-                buf.removeAll()
-                return
-            }
+            let marker = buf[0]
+            let len = (Int(buf[1]) << 24) | (Int(buf[2]) << 16) | (Int(buf[3]) << 8) | Int(buf[4])
 
             // Validate length
             guard len > 0, len <= 1_000_000 else {
@@ -443,14 +434,7 @@ class BluetoothBridge: NSObject, ObservableObject {
             guard buf.count >= 5 + len else { break }
 
             // Extract payload safely
-            let payload: Data
-            do {
-                payload = buf.subdata(in: 5..<(5+len))
-            } catch {
-                print("[Konnekt] Payload extraction error")
-                buf.removeAll()
-                return
-            }
+            let payload = buf.subdata(in: 5..<(5+len))
             
             buf.removeFirst(5 + len)
 
@@ -488,18 +472,12 @@ class BluetoothBridge: NSObject, ObservableObject {
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            
-            // Guard against crashes in callback handlers
-            do {
-                try self.handlePacket(type: type, obj: obj)
-            } catch {
-                print("[Konnekt] Error handling packet: \(error)")
-            }
+            self.handlePacket(type: type, obj: obj)
         }
     }
     
-    // Separate method to handle packets - allows error handling per case
-    private func handlePacket(type: String, obj: [String: Any]) throws {
+    // Handle packets
+    private func handlePacket(type: String, obj: [String: Any]) {
         switch type {
         case "HANDSHAKE":
             let platform = obj["platform"] as? String ?? "unknown"
