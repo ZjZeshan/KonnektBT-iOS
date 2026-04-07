@@ -2,6 +2,7 @@
 // File-based logger for crash debugging (no Mac needed)
 
 import Foundation
+import UIKit
 
 class Logger {
     static let shared = Logger()
