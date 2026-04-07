@@ -55,22 +55,20 @@ class AppState: ObservableObject {
                 return
             }
             // CRASH SAFETY: All bridge property access must be on main thread
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                do {
-                    // Safely update published properties
-                    let newConnected = self.bridge.isConnected
-                    let newStatus = self.bridge.connectionStatus
-                    let newError = self.bridge.lastError
-                    
-                    if self.isBridgeConnected != newConnected || self.bridgeStatus != newStatus {
-                        logger.log("Bridge state changed: connected=\(newConnected), status=\(newStatus)", category: "APP")
-                    }
-                    
-                    self.isBridgeConnected = newConnected
-                    self.bridgeStatus = newStatus
-                    self.bridgeError = newError
+                // Safely update published properties
+                let newConnected = self.bridge.isConnected
+                let newStatus = self.bridge.connectionStatus
+                let newError = self.bridge.lastError
+                
+                if self.isBridgeConnected != newConnected || self.bridgeStatus != newStatus {
+                    logger.log("Bridge state changed: connected=\(newConnected), status=\(newStatus)", category: "APP")
                 }
+                
+                self.isBridgeConnected = newConnected
+                self.bridgeStatus = newStatus
+                self.bridgeError = newError
             }
         }
     }
