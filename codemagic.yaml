@@ -1,6 +1,6 @@
 workflows:
-  ios-unsigned-ipa:
-    name: KONNEKT — iPhone 15 Pro Max / iOS 26
+  default:
+    name: Default Workflow
     max_build_duration: 30
     instance_type: mac_mini_m2
     environment:
