@@ -19,7 +19,7 @@ struct KonnektBTApp: App {
                     logger.info("KonnektBT App appeared")
                 }
         }
-        .onChange(of: scenePhase) {
+        .onChange(of: scenePhase) { _ in
             switch scenePhase {
             case .background:
                 appState.handleBackground()
