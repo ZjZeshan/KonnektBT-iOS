@@ -2,6 +2,9 @@
 import Foundation
 import AVFAudio
 
+// File-based logger
+let audioLogger = Logger.shared
+
 class AudioStreamManager: ObservableObject {
 
     // Audio Specifications:
@@ -23,16 +26,21 @@ class AudioStreamManager: ObservableObject {
     private let stateQueue = DispatchQueue(label: "com.konnekt.audio.state")
 
     func start() {
+        audioLogger.log("AudioStreamManager.start() called", category: "AUDIO")
         stateQueue.sync {
-            guard !isRunning else { return }
+            guard !isRunning else { 
+                audioLogger.log("Already running, ignoring start", category: "AUDIO")
+                return 
+            }
             isRunning = true
         }
 
         do {
             setupEngine()
             try audioEngine?.start()
+            audioLogger.log("Audio engine started successfully", category: "AUDIO")
         } catch {
-            print("[Audio] Engine failed: \(error)")
+            audioLogger.error("Audio engine failed: \(error)")
             stateQueue.sync { self.isRunning = false }
             cleanupEngine()
         }
@@ -66,6 +74,7 @@ class AudioStreamManager: ObservableObject {
     }
 
     private func cleanupEngine() {
+        audioLogger.log("cleanupEngine called", category: "AUDIO")
         if inputTapInstalled, let engine = audioEngine {
             engine.inputNode.removeTap(onBus: 0)
             inputTapInstalled = false
@@ -86,10 +95,16 @@ class AudioStreamManager: ObservableObject {
     func playAudio(_ pcmData: Data) {
         guard let player = playerNode,
               let engine = audioEngine,
-              engine.isRunning else { return }
+              engine.isRunning else { 
+            audioLogger.log("playAudio: engine not ready, ignoring", category: "AUDIO")
+            return 
+        }
 
         let sampleCount = pcmData.count / 2  // 16-bit = 2 bytes per sample
-        guard sampleCount > 0 else { return }
+        guard sampleCount > 0 else { 
+            audioLogger.log("playAudio: empty data, ignoring", category: "AUDIO")
+            return 
+        }
 
         // Create buffer with interleaved format
         guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16,
@@ -98,7 +113,10 @@ class AudioStreamManager: ObservableObject {
                                          interleaved: true),
               let buffer = AVAudioPCMBuffer(pcmFormat: format,
                                           frameCapacity: AVAudioFrameCount(sampleCount))
-        else { return }
+        else { 
+            audioLogger.log("playAudio: failed to create buffer", category: "AUDIO")
+            return 
+        }
 
         buffer.frameLength = AVAudioFrameCount(sampleCount)
 
@@ -181,7 +199,7 @@ class AudioStreamManager: ObservableObject {
         }
 
         if let error = error {
-            print("[Audio] Convert error: \(error)")
+            audioLogger.log("Convert error: \(error)", category: "AUDIO")
             return nil
         }
 
@@ -189,13 +207,17 @@ class AudioStreamManager: ObservableObject {
     }
 
     func stop() {
+        audioLogger.log("AudioStreamManager.stop() called", category: "AUDIO")
         var wasRunning = false
         stateQueue.sync {
             wasRunning = isRunning
             isRunning = false
         }
 
-        guard wasRunning else { return }
+        guard wasRunning else { 
+            audioLogger.log("Was not running, ignoring stop", category: "AUDIO")
+            return 
+        }
 
         if inputTapInstalled, let engine = audioEngine {
             engine.inputNode.removeTap(onBus: 0)
@@ -213,5 +235,6 @@ class AudioStreamManager: ObservableObject {
 
         playerNode = nil
         audioEngine = nil
+        audioLogger.log("AudioStreamManager stopped", category: "AUDIO")
     }
 }

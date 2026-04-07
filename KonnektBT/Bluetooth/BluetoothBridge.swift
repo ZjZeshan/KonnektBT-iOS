@@ -7,6 +7,9 @@
 import Foundation
 import Network
 
+// File-based logger
+let bridgeLogger = Logger.shared
+
 // MARK: - Models
 struct CallPacket { let callId, caller, number: String }
 
@@ -75,7 +78,7 @@ class BluetoothBridge: NSObject, ObservableObject {
     private func updateStatus(_ msg: String) {
         DispatchQueue.main.async { [weak self] in
             self?.connectionStatus = msg
-            print("[Konnekt] \(msg)")
+            bridgeLogger.log(msg, category: "BRIDGE")
         }
     }
 
@@ -83,7 +86,7 @@ class BluetoothBridge: NSObject, ObservableObject {
         DispatchQueue.main.async { [weak self] in
             self?.lastError = msg
             self?.onConnectionError?(msg)
-            print("[Konnekt ERROR] \(msg)")
+            bridgeLogger.error(msg)
         }
     }
 
@@ -231,7 +234,7 @@ class BluetoothBridge: NSObject, ObservableObject {
 
     private func connect(to endpoint: NWEndpoint) {
         guard state == .searching || state == .connecting || state == .idle else {
-            print("[Konnekt] Already connected, ignoring")
+            bridgeLogger.log("Already connected, ignoring", category: "BRIDGE")
             return
         }
 
@@ -255,26 +258,26 @@ class BluetoothBridge: NSObject, ObservableObject {
                 break
 
             case .ready:
-                print("[Konnekt] Connection .ready received")
+                bridgeLogger.log("Connection .ready received", category: "BRIDGE")
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
                     // Additional safety - verify we're in a valid state to connect
                     guard self.state == .connecting || self.state == .searching || self.state == .idle else {
-                        print("[Konnekt] Already connected or invalid state, ignoring")
+                        bridgeLogger.log("Already connected or invalid state, ignoring", category: "BRIDGE")
                         return
                     }
-                    print("[Konnekt] Setting state to connected, starting readLoop and sending HANDSHAKE")
+                    bridgeLogger.log("Setting state to connected, starting readLoop and sending HANDSHAKE", category: "BRIDGE")
                     self.state = .connected
                     self.isConnected = true
                     self.updateStatus("Connected!")
                     self.lastError = nil
                     self.readLoop(conn: connection)
                     self.sendPacket(["type": "HANDSHAKE", "platform": "ios", "version": "2.8"])
-                    print("[Konnekt] HANDSHAKE sent")
+                    bridgeLogger.log("HANDSHAKE sent", category: "BRIDGE")
                 }
 
             case .failed(let err):
-                print("[Konnekt] Connection failed: \(err)")
+                bridgeLogger.log("Connection failed: \(err)", category: "BRIDGE")
                 DispatchQueue.main.async {
                     self.updateError("Connection failed: \(err.localizedDescription)")
                     self.state = .idle
@@ -283,7 +286,7 @@ class BluetoothBridge: NSObject, ObservableObject {
                 }
 
             case .waiting(let err):
-                print("[Konnekt] Waiting: \(err)")
+                bridgeLogger.log("Waiting: \(err)", category: "BRIDGE")
                 DispatchQueue.main.async {
                     self.updateStatus("Waiting for network...")
                 }
@@ -351,7 +354,7 @@ class BluetoothBridge: NSObject, ObservableObject {
             
             // Additional safety check - verify this connection is still the active one
             guard conn === self.conn else {
-                print("[Konnekt] Stale connection callback, ignoring")
+                bridgeLogger.log("Stale connection callback, ignoring", category: "BRIDGE")
                 return
             }
 
@@ -359,7 +362,7 @@ class BluetoothBridge: NSObject, ObservableObject {
                 let code = (err as NSError).code
                 // Ignore common disconnect codes (57 = socket closed, 54 = connection reset)
                 if code != 57 && code != 54 {
-                    print("[Konnekt] Receive error: \(code)")
+                    bridgeLogger.log("Receive error: \(code)", category: "BRIDGE")
                 }
                 DispatchQueue.main.async {
                     self.updateError("Connection lost")
@@ -372,7 +375,7 @@ class BluetoothBridge: NSObject, ObservableObject {
                 // Limit buffer size to prevent memory issues
                 let newSize = self.buf.count + data.count
                 if newSize > 10_000_000 {
-                    print("[Konnekt] Buffer overflow, clearing")
+                    bridgeLogger.log("Buffer overflow, clearing", category: "BRIDGE")
                     self.buf.removeAll()
                     return
                 }
@@ -403,7 +406,7 @@ class BluetoothBridge: NSObject, ObservableObject {
 
         // Guard against buffer overflow
         if buf.count > 10_000_000 {
-            print("[Konnekt] Buffer overflow, clearing")
+            bridgeLogger.log("Buffer overflow, clearing", category: "BRIDGE")
             buf.removeAll()
             return
         }
@@ -417,7 +420,7 @@ class BluetoothBridge: NSObject, ObservableObject {
 
             // Validate length
             guard len > 0, len <= 1_000_000 else {
-                print("[Konnekt] Invalid packet length: \(len)")
+                bridgeLogger.log("Invalid packet length: \(len)", category: "BRIDGE")
                 var found = false
                 for i in 1..<min(buf.count, 100) {
                     if buf[i] == Self.MARK_JSON || buf[i] == Self.MARK_AUDIO {
@@ -442,15 +445,15 @@ class BluetoothBridge: NSObject, ObservableObject {
 
                 switch marker {
                 case Self.MARK_JSON:
-                    print("[Konnekt] Received JSON packet, length=\(len)")
+                    bridgeLogger.log("Received JSON packet, length=\(len)", category: "PARSE")
                     if let s = String(data: payload, encoding: .utf8) {
-                        print("[Konnekt] JSON string: \(s.prefix(200))")
+                        bridgeLogger.log("JSON string: \(s.prefix(200))", category: "PARSE")
                         dispatchJSON(s)
                     } else {
-                        print("[Konnekt] Failed to decode JSON as UTF8")
+                        bridgeLogger.log("Failed to decode JSON as UTF8", category: "PARSE")
                     }
                 case Self.MARK_AUDIO:
-                    print("[Konnekt] Received AUDIO packet, length=\(len)")
+                    bridgeLogger.log("Received AUDIO packet, length=\(len)", category: "AUDIO")
                     let copy = payload
                     DispatchQueue.main.async { [weak self] in
                         guard let self = self, self.isConnected else { return }
@@ -458,13 +461,13 @@ class BluetoothBridge: NSObject, ObservableObject {
                     }
                 default:
                     // Unknown marker, skip it
-                    print("[Konnekt] Unknown marker: 0x\(String(marker, radix: 16))")
+                    bridgeLogger.log("Unknown marker: 0x\(String(marker, radix: 16))", category: "PARSE")
                     if !buf.isEmpty {
                         buf.removeFirst(1)
                     }
                 }
             } catch {
-                print("[Konnekt] Parse error: \(error), clearing buffer")
+                bridgeLogger.log("Parse error: \(error), clearing buffer", category: "PARSE")
                 buf.removeAll()
                 return
             }
@@ -474,58 +477,58 @@ class BluetoothBridge: NSObject, ObservableObject {
     // MARK: - Dispatch JSON
 
     private func dispatchJSON(_ json: String) {
-        print("[Konnekt] dispatchJSON called with: \(json.prefix(200))")
+        bridgeLogger.log("dispatchJSON called with: \(json.prefix(200))", category: "PACKET")
         guard let raw = json.data(using: .utf8) else {
-            print("[Konnekt] dispatchJSON: Failed to convert to data")
+            bridgeLogger.log("dispatchJSON: Failed to convert to data", category: "PACKET")
             return
         }
         
         guard let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
-            print("[Konnekt] dispatchJSON: Failed to parse JSON")
+            bridgeLogger.log("dispatchJSON: Failed to parse JSON", category: "PACKET")
             return
         }
         
         guard let type = obj["type"] as? String else {
-            print("[Konnekt] dispatchJSON: No 'type' field in JSON")
+            bridgeLogger.log("dispatchJSON: No 'type' field in JSON", category: "PACKET")
             return
         }
 
-        print("[Konnekt] dispatchJSON: type=\(type)")
+        bridgeLogger.log("dispatchJSON: type=\(type)", category: "PACKET")
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            print("[Konnekt] handlePacket: \(type) - on main thread")
+            bridgeLogger.log("handlePacket: \(type) - on main thread", category: "PACKET")
             self.handlePacket(type: type, obj: obj)
         }
     }
     
     // Handle packets
     private func handlePacket(type: String, obj: [String: Any]) {
-        print("[Konnekt] handlePacket: \(type)")
+        bridgeLogger.log("handlePacket: \(type)", category: "PACKET")
         
         // CRASH SAFETY: Wrap each case in do-catch
         do {
             switch type {
             case "HANDSHAKE":
                 let platform = obj["platform"] as? String ?? "unknown"
-                print("[Konnekt] HANDSHAKE from Android: platform=\(platform)")
+                bridgeLogger.log("HANDSHAKE from Android: platform=\(platform)", category: "PACKET")
                 updateStatus("Android connected!")
                 sendPacket([
                     "type": "HANDSHAKE",
                     "platform": "ios",
                     "version": "2.8"
                 ])
-                print("[Konnekt] HANDSHAKE response sent")
+                bridgeLogger.log("HANDSHAKE response sent", category: "PACKET")
 
             case "HANDSHAKE_ACK":
-                print("[Konnekt] HANDSHAKE_ACK received")
+                bridgeLogger.log("HANDSHAKE_ACK received", category: "PACKET")
                 updateStatus("Connected & Synced!")
 
             case "CALL_INCOMING":
-                print("[Konnekt] CALL_INCOMING packet")
+                bridgeLogger.log("CALL_INCOMING packet", category: "PACKET")
                 let id = obj["callId"] as? String ?? UUID().uuidString
                 guard id != lastCallId else { 
-                    print("[Konnekt] Duplicate call ignored")
+                    bridgeLogger.log("Duplicate call ignored", category: "PACKET")
                     return
                 }
                 lastCallId = id
@@ -536,19 +539,19 @@ class BluetoothBridge: NSObject, ObservableObject {
                 
                 // Safely invoke callback with validated data
                 let packet = CallPacket(callId: id, caller: caller, number: number)
-                print("[Konnekt] Calling onCallIncoming callback")
+                bridgeLogger.log("Calling onCallIncoming callback", category: "PACKET")
                 onCallIncoming?(packet)
-                print("[Konnekt] onCallIncoming callback completed")
+                bridgeLogger.log("onCallIncoming callback completed", category: "PACKET")
 
             case "CALL_ENDED", "CALL_END", "CALL_DISCONNECTED":
-                print("[Konnekt] Call ended packet: \(type)")
+                bridgeLogger.log("Call ended packet: \(type)", category: "PACKET")
                 lastCallId = ""
-                print("[Konnekt] Calling onCallEnded callback")
+                bridgeLogger.log("Calling onCallEnded callback", category: "PACKET")
                 onCallEnded?()
-                print("[Konnekt] onCallEnded callback completed")
+                bridgeLogger.log("onCallEnded callback completed", category: "PACKET")
 
             case "SMS_RECEIVED", "SMS_HISTORY", "SMS", "MESSAGE":
-                print("[Konnekt] SMS packet: \(type)")
+                bridgeLogger.log("SMS packet: \(type)", category: "PACKET")
                 var ts = obj["timestamp"] as? TimeInterval ?? Date().timeIntervalSince1970
                 if ts < 946684800 { ts *= 1000 }
                 if ts > 2114380800 { ts /= 1000 }
@@ -560,33 +563,33 @@ class BluetoothBridge: NSObject, ObservableObject {
                 let packet = SMSPacket(
                     sender: sender, number: number, body: body,
                     timestamp: ts, isHistory: type == "SMS_HISTORY")
-                print("[Konnekt] Calling onSMSReceived callback")
+                bridgeLogger.log("Calling onSMSReceived callback", category: "PACKET")
                 onSMSReceived?(packet)
-                print("[Konnekt] onSMSReceived callback completed")
+                bridgeLogger.log("onSMSReceived callback completed", category: "PACKET")
 
             case "HEARTBEAT", "PING":
-                print("[Konnekt] Heartbeat/Ping received")
+                bridgeLogger.log("Heartbeat/Ping received", category: "PACKET")
                 sendPacket(["type": "PONG"])
                 
             case "PONG", "ACK", "SYNC_COMPLETE":
-                print("[Konnekt] ACK received: \(type)")
+                bridgeLogger.log("ACK received: \(type)", category: "PACKET")
                 break
                 
             case "AUDIO_START", "AUDIO_STOP", "STREAM_START", "STREAM_STOP":
-                print("[Konnekt] Audio control: \(type)")
+                bridgeLogger.log("Audio control: \(type)", category: "PACKET")
                 // Audio control messages - no-op, handled by audio manager
                 break
             
             case "DEVICE_INFO", "BATTERY", "NETWORK_STATUS":
-                print("[Konnekt] Device info: \(type)")
+                bridgeLogger.log("Device info: \(type)", category: "PACKET")
                 break
                 
             default:
-                print("[Konnekt] Unknown packet type: \(type)")
+                bridgeLogger.log("Unknown packet type: \(type)", category: "PACKET")
             }
-            print("[Konnekt] handlePacket: \(type) completed successfully")
+            bridgeLogger.log("handlePacket: \(type) completed successfully", category: "PACKET")
         } catch {
-            print("[Konnekt] handlePacket error: \(error)")
+            bridgeLogger.log("handlePacket error: \(error)", category: "PACKET")
         }
     }
 
@@ -594,7 +597,7 @@ class BluetoothBridge: NSObject, ObservableObject {
 
     func sendPacket(_ dict: [String: Any]) {
         guard let json = try? JSONSerialization.data(withJSONObject: dict) else {
-            print("[Konnekt] JSON encode failed")
+            bridgeLogger.log("JSON encode failed", category: "SEND")
             return
         }
         send(marker: Self.MARK_JSON, payload: json)
@@ -620,7 +623,7 @@ class BluetoothBridge: NSObject, ObservableObject {
             guard let conn = self?.conn else { return }
             conn.send(content: frame, completion: .contentProcessed { err in
                 if let err = err {
-                    print("[Konnekt] Send error: \(err)")
+                    bridgeLogger.log("Send error: \(err)", category: "SEND")
                 }
             })
         }

@@ -3,6 +3,9 @@ import SwiftUI
 import AVFoundation
 import UIKit
 
+// Global logger instance
+let logger = Logger.shared
+
 // ── AppState ──────────────────────────────────────────────────────────────────
 class AppState: ObservableObject {
     let bridge       = BluetoothBridge()
@@ -22,32 +25,32 @@ class AppState: ObservableObject {
     private var bridgeObserverTimer: Timer?
 
     init() {
-        print("[AppState] INIT - starting setup")
+        logger.log("AppState INIT - starting setup", category: "APP")
         setupBridgeObserver()
-        print("[AppState] setupBridgeObserver done")
+        logger.log("AppState setupBridgeObserver done", category: "APP")
         setupCallbacks()
-        print("[AppState] setupCallbacks done")
+        logger.log("AppState setupCallbacks done", category: "APP")
         // Start discovery after network monitor initializes
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            print("[AppState] Starting discovery...")
+            logger.log("Starting discovery...", category: "APP")
             self?.bridge.startDiscovery()
         }
-        print("[AppState] INIT complete")
+        logger.log("AppState INIT complete", category: "APP")
     }
     
     deinit {
         // Clean up timer when AppState is deallocated
         bridgeObserverTimer?.invalidate()
-        print("[AppState] DEINIT - cleanup complete")
+        logger.log("AppState DEINIT - cleanup complete", category: "APP")
     }
     
     private func setupBridgeObserver() {
-        print("[AppState] Creating bridge observer timer")
+        logger.log("Creating bridge observer timer", category: "APP")
         // Observe bridge changes manually
         // Using Timer stored as property to allow proper cleanup
         bridgeObserverTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
             guard let self = self else {
-                print("[AppState] Timer fired but self is nil, invalidating")
+                logger.log("Timer fired but self is nil, invalidating", category: "APP")
                 timer.invalidate()
                 return
             }
@@ -61,7 +64,7 @@ class AppState: ObservableObject {
                     let newError = self.bridge.lastError
                     
                     if self.isBridgeConnected != newConnected || self.bridgeStatus != newStatus {
-                        print("[AppState] Bridge state changed: connected=\(newConnected), status=\(newStatus)")
+                        logger.log("Bridge state changed: connected=\(newConnected), status=\(newStatus)", category: "APP")
                     }
                     
                     self.isBridgeConnected = newConnected
@@ -73,13 +76,13 @@ class AppState: ObservableObject {
     }
 
     func handleBackground() {
-        print("[App] Entering background")
+        logger.log("Entering background", category: "APP")
         // Keep audio session active for VoIP background mode
         activateBackgroundAudio()
     }
     
     func handleForeground() {
-        print("[App] Entering foreground")
+        logger.log("Entering foreground", category: "APP")
         // Reconnect if needed
         if !bridge.isConnected {
             bridge.startDiscovery()
@@ -92,16 +95,16 @@ class AppState: ObservableObject {
             try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .defaultToSpeaker])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
-            print("[App] Audio session error: \(error)")
+            logger.error("Audio session error: \(error)")
         }
     }
 
     private func setupCallbacks() {
-        print("[AppState] Setting up callbacks")
+        logger.log("Setting up callbacks", category: "APP")
         
         // Connection errors
         bridge.onConnectionError = { [weak self] error in
-            print("[AppState] Connection error callback: \(error)")
+            logger.log("Connection error callback: \(error)", category: "APP")
             DispatchQueue.main.async {
                 self?.bridgeError = error
             }
@@ -109,46 +112,46 @@ class AppState: ObservableObject {
 
         // Incoming call - CRASH SAFE
         bridge.onCallIncoming = { [weak self] packet in
-            print("[AppState] onCallIncoming: callId=\(packet.callId), caller=\(packet.caller)")
+            logger.log("onCallIncoming: callId=\(packet.callId), caller=\(packet.caller)", category: "APP")
             DispatchQueue.main.async {
                 guard let self = self else {
-                    print("[AppState] onCallIncoming: self is nil!")
+                    logger.log("onCallIncoming: self is nil!", category: "APP")
                     return
                 }
                 // Guard against duplicate calls
                 if self.activeCall?.callId == packet.callId {
-                    print("[AppState] Duplicate call ignored")
+                    logger.log("Duplicate call ignored", category: "APP")
                     return
                 }
                 self.activeCall = packet
                 
                 let callerName = packet.caller.isEmpty ? "Unknown" : packet.caller
-                print("[AppState] Reporting incoming call to CallKit")
+                logger.log("Reporting incoming call to CallKit", category: "APP")
                 self.callKit.reportIncomingCall(
                     callId: packet.callId,
                     callerName: callerName,
                     callerNumber: packet.number)
-                print("[AppState] reportIncomingCall completed")
+                logger.log("reportIncomingCall completed", category: "APP")
             }
         }
 
         // Call ended - CRASH SAFE
         bridge.onCallEnded = { [weak self] in
-            print("[AppState] onCallEnded callback")
+            logger.log("onCallEnded callback", category: "APP")
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                print("[AppState] Ending call in CallKit")
+                logger.log("Ending call in CallKit", category: "APP")
                 self.callKit.endCall()
                 self.audioManager.stop()
                 self.activeCall = nil
                 self.isInCall = false
-                print("[AppState] Call ended cleanup done")
+                logger.log("Call ended cleanup done", category: "APP")
             }
         }
 
         // SMS received - CRASH SAFE
         bridge.onSMSReceived = { [weak self] packet in
-            print("[AppState] onSMSReceived: from=\(packet.sender)")
+            logger.log("onSMSReceived: from=\(packet.sender)", category: "APP")
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 // Simple dedup - check last 10 messages
@@ -161,7 +164,7 @@ class AppState: ObservableObject {
                 if self.smsMessages.count > 500 {
                     self.smsMessages = Array(self.smsMessages.prefix(500))
                 }
-                print("[AppState] SMS added, total: \(self.smsMessages.count)")
+                logger.log("SMS added, total: \(self.smsMessages.count)", category: "APP")
             }
         }
 
@@ -176,23 +179,23 @@ class AppState: ObservableObject {
 
         // Call answered by user - CRASH SAFE
         callKit.onCallAnswered = { [weak self] in
-            print("[AppState] onCallAnswered callback")
+            logger.log("onCallAnswered callback", category: "APP")
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.isInCall = true
-                print("[AppState] Starting audio manager")
+                logger.log("Starting audio manager", category: "APP")
                 self.audioManager.start()
                 self.bridge.sendCallAnswered()
                 self.audioManager.onCapturedAudio = { [weak self] data in
                     self?.bridge.sendAudioFrame(data)
                 }
-                print("[AppState] Call answered setup complete")
+                logger.log("Call answered setup complete", category: "APP")
             }
         }
 
         // Call rejected - CRASH SAFE
         callKit.onCallRejected = { [weak self] in
-            print("[AppState] onCallRejected callback")
+            logger.log("onCallRejected callback", category: "APP")
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.bridge.sendCallRejected()
@@ -203,7 +206,7 @@ class AppState: ObservableObject {
 
         // Call ended from UI - CRASH SAFE
         callKit.onCallEnded = { [weak self] in
-            print("[AppState] onCallEnded (UI) callback")
+            logger.log("onCallEnded (UI) callback", category: "APP")
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.bridge.sendCallEnded()
@@ -213,7 +216,7 @@ class AppState: ObservableObject {
             }
         }
         
-        print("[AppState] All callbacks set up")
+        logger.log("All callbacks set up", category: "APP")
     }
 }
 
@@ -726,21 +729,132 @@ struct PairingView: View {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 struct SettingsView: View {
+    @State private var showLogViewer = false
+    
     var body: some View {
         NavigationStack {
             ZStack {
                 Color(hex: "#0a0c10").ignoresSafeArea()
-                VStack(spacing: 16) {
-                    Image(systemName: "phone.arrow.up.right.fill")
-                        .font(.system(size: 60)).foregroundColor(Color(hex: "#00e5a0"))
-                    Text("KONNEKT").font(.system(size: 28, weight: .bold)).foregroundColor(.white)
-                    Text("Android SIM → iPhone Bridge")
-                        .font(.system(.caption, design: .monospaced)).foregroundColor(.gray)
-                    Text("Version 2.0")
-                        .font(.caption2).foregroundColor(Color(hex: "#6b7280"))
+                ScrollView {
+                    VStack(spacing: 16) {
+                        Image(systemName: "phone.arrow.up.right.fill")
+                            .font(.system(size: 60)).foregroundColor(Color(hex: "#00e5a0"))
+                        Text("KONNEKT").font(.system(size: 28, weight: .bold)).foregroundColor(.white)
+                        Text("Android SIM → iPhone Bridge")
+                            .font(.system(.caption, design: .monospaced)).foregroundColor(.gray)
+                        Text("Version 2.0")
+                            .font(.caption2).foregroundColor(Color(hex: "#6b7280"))
+                        
+                        // Debug Section
+                        Divider().background(Color(hex: "#22273a"))
+                        
+                        VStack(spacing: 12) {
+                            Text("DEBUG TOOLS")
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundColor(.gray)
+                            
+                            Button {
+                                showLogViewer = true
+                            } label: {
+                                HStack {
+                                    Image(systemName: "doc.text.magnifyingglass")
+                                    Text("View Crash Logs")
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                }
+                                .foregroundColor(Color(hex: "#00e5a0"))
+                                .padding()
+                                .background(Color(hex: "#12151c"))
+                                .cornerRadius(12)
+                            }
+                            
+                            Button {
+                                let logPath = logger.getLogFileURL()
+                                let activityVC = UIActivityViewController(
+                                    activityItems: [logPath],
+                                    applicationActivities: nil
+                                )
+                                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                                   let rootVC = windowScene.windows.first?.rootViewController {
+                                    rootVC.present(activityVC, animated: true)
+                                }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "square.and.arrow.up")
+                                    Text("Share Logs")
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                }
+                                .foregroundColor(Color(hex: "#00e5a0"))
+                                .padding()
+                                .background(Color(hex: "#12151c"))
+                                .cornerRadius(12)
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                    .padding(.vertical, 40)
                 }
             }
             .navigationTitle("Settings")
+            .sheet(isPresented: $showLogViewer) {
+                LogViewerView()
+            }
+        }
+    }
+}
+
+// ── Log Viewer ─────────────────────────────────────────────────────────────────
+struct LogViewerView: View {
+    @State private var logContent = ""
+    @Environment(\.dismiss) var dismiss
+    
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color(hex: "#0a0c10").ignoresSafeArea()
+                VStack {
+                    if logContent.isEmpty {
+                        Text("No logs yet")
+                            .foregroundColor(.gray)
+                    } else {
+                        ScrollView {
+                            Text(logContent)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(Color(hex: "#00e5a0"))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding()
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Crash Logs")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Done") { dismiss() }
+                        .foregroundColor(Color(hex: "#00e5a0"))
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        let logPath = logger.getLogFileURL()
+                        let activityVC = UIActivityViewController(
+                            activityItems: [logPath],
+                            applicationActivities: nil
+                        )
+                        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                           let rootVC = windowScene.windows.first?.rootViewController {
+                            rootVC.present(activityVC, animated: true)
+                        }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .foregroundColor(Color(hex: "#00e5a0"))
+                    }
+                }
+            }
+            .onAppear {
+                logContent = logger.getLogContents()
+            }
         }
     }
 }
