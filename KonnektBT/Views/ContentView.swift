@@ -51,18 +51,24 @@ class AppState: ObservableObject {
                 timer.invalidate()
                 return
             }
-            // Safely update published properties
-            let newConnected = self.bridge.isConnected
-            let newStatus = self.bridge.connectionStatus
-            let newError = self.bridge.lastError
-            
-            if self.isBridgeConnected != newConnected || self.bridgeStatus != newStatus {
-                print("[AppState] Bridge state changed: connected=\(newConnected), status=\(newStatus)")
+            // CRASH SAFETY: All bridge property access must be on main thread
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                do {
+                    // Safely update published properties
+                    let newConnected = self.bridge.isConnected
+                    let newStatus = self.bridge.connectionStatus
+                    let newError = self.bridge.lastError
+                    
+                    if self.isBridgeConnected != newConnected || self.bridgeStatus != newStatus {
+                        print("[AppState] Bridge state changed: connected=\(newConnected), status=\(newStatus)")
+                    }
+                    
+                    self.isBridgeConnected = newConnected
+                    self.bridgeStatus = newStatus
+                    self.bridgeError = newError
+                }
             }
-            
-            self.isBridgeConnected = newConnected
-            self.bridgeStatus = newStatus
-            self.bridgeError = newError
         }
     }
 
@@ -91,83 +97,123 @@ class AppState: ObservableObject {
     }
 
     private func setupCallbacks() {
+        print("[AppState] Setting up callbacks")
+        
         // Connection errors
-        bridge.onConnectionError = { error in
-            print("[App] Connection error: \(error)")
+        bridge.onConnectionError = { [weak self] error in
+            print("[AppState] Connection error callback: \(error)")
+            DispatchQueue.main.async {
+                self?.bridgeError = error
+            }
         }
 
-        // Incoming call
+        // Incoming call - CRASH SAFE
         bridge.onCallIncoming = { [weak self] packet in
-            guard let self = self else { return }
-            // Guard against duplicate calls
-            guard self.activeCall?.callId != packet.callId else { return }
-            self.activeCall = packet
-            
-            let callerName = packet.caller.isEmpty ? "Unknown" : packet.caller
-            self.callKit.reportIncomingCall(
-                callId: packet.callId,
-                callerName: callerName,
-                callerNumber: packet.number)
+            print("[AppState] onCallIncoming: callId=\(packet.callId), caller=\(packet.caller)")
+            DispatchQueue.main.async {
+                guard let self = self else {
+                    print("[AppState] onCallIncoming: self is nil!")
+                    return
+                }
+                // Guard against duplicate calls
+                if self.activeCall?.callId == packet.callId {
+                    print("[AppState] Duplicate call ignored")
+                    return
+                }
+                self.activeCall = packet
+                
+                let callerName = packet.caller.isEmpty ? "Unknown" : packet.caller
+                print("[AppState] Reporting incoming call to CallKit")
+                self.callKit.reportIncomingCall(
+                    callId: packet.callId,
+                    callerName: callerName,
+                    callerNumber: packet.number)
+                print("[AppState] reportIncomingCall completed")
+            }
         }
 
-        // Call ended
+        // Call ended - CRASH SAFE
         bridge.onCallEnded = { [weak self] in
-            guard let self = self else { return }
-            self.callKit.endCall()
-            self.audioManager.stop()
-            self.activeCall = nil
-            self.isInCall = false
+            print("[AppState] onCallEnded callback")
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                print("[AppState] Ending call in CallKit")
+                self.callKit.endCall()
+                self.audioManager.stop()
+                self.activeCall = nil
+                self.isInCall = false
+                print("[AppState] Call ended cleanup done")
+            }
         }
 
-        // SMS received
+        // SMS received - CRASH SAFE
         bridge.onSMSReceived = { [weak self] packet in
-            guard let self = self else { return }
-            // Simple dedup - check last 10 messages
-            let isDupe = self.smsMessages.prefix(10).contains {
-                $0.number == packet.number && $0.body == packet.body
-            }
-            guard !isDupe else { return }
-            
-            self.smsMessages.insert(packet, at: 0)
-            if self.smsMessages.count > 500 {
-                self.smsMessages = Array(self.smsMessages.prefix(500))
+            print("[AppState] onSMSReceived: from=\(packet.sender)")
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                // Simple dedup - check last 10 messages
+                let isDupe = self.smsMessages.prefix(10).contains {
+                    $0.number == packet.number && $0.body == packet.body
+                }
+                guard !isDupe else { return }
+                
+                self.smsMessages.insert(packet, at: 0)
+                if self.smsMessages.count > 500 {
+                    self.smsMessages = Array(self.smsMessages.prefix(500))
+                }
+                print("[AppState] SMS added, total: \(self.smsMessages.count)")
             }
         }
 
-        // Audio playback during call
+        // Audio playback during call - CRASH SAFE
         bridge.onAudioReceived = { [weak self] data in
-            guard let self = self else { return }
-            guard self.isInCall else { return }
-            self.audioManager.playAudio(data)
-        }
-
-        // Call answered by user
-        callKit.onCallAnswered = { [weak self] in
-            guard let self = self else { return }
-            self.isInCall = true
-            self.audioManager.start()
-            self.bridge.sendCallAnswered()
-            self.audioManager.onCapturedAudio = { [weak self] data in
-                self?.bridge.sendAudioFrame(data)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                guard self.isInCall else { return }
+                self.audioManager.playAudio(data)
             }
         }
 
-        // Call rejected
-        callKit.onCallRejected = { [weak self] in
-            guard let self = self else { return }
-            self.bridge.sendCallRejected()
-            self.activeCall = nil
-            self.isInCall = false
+        // Call answered by user - CRASH SAFE
+        callKit.onCallAnswered = { [weak self] in
+            print("[AppState] onCallAnswered callback")
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.isInCall = true
+                print("[AppState] Starting audio manager")
+                self.audioManager.start()
+                self.bridge.sendCallAnswered()
+                self.audioManager.onCapturedAudio = { [weak self] data in
+                    self?.bridge.sendAudioFrame(data)
+                }
+                print("[AppState] Call answered setup complete")
+            }
         }
 
-        // Call ended from UI
-        callKit.onCallEnded = { [weak self] in
-            guard let self = self else { return }
-            self.bridge.sendCallEnded()
-            self.audioManager.stop()
-            self.activeCall = nil
-            self.isInCall = false
+        // Call rejected - CRASH SAFE
+        callKit.onCallRejected = { [weak self] in
+            print("[AppState] onCallRejected callback")
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.bridge.sendCallRejected()
+                self.activeCall = nil
+                self.isInCall = false
+            }
         }
+
+        // Call ended from UI - CRASH SAFE
+        callKit.onCallEnded = { [weak self] in
+            print("[AppState] onCallEnded (UI) callback")
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.bridge.sendCallEnded()
+                self.audioManager.stop()
+                self.activeCall = nil
+                self.isInCall = false
+            }
+        }
+        
+        print("[AppState] All callbacks set up")
     }
 }
 

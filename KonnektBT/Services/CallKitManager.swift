@@ -34,17 +34,22 @@ class CallKitManager: NSObject, ObservableObject {
 
     // Called by bridge when Android reports an incoming call
     func reportIncomingCall(callId: String, callerName: String, callerNumber: String) {
+        print("[CallKit] reportIncomingCall: callId=\(callId), callerName=\(callerName), number=\(callerNumber)")
+        
         // FIXED: Thread-safe state check
         var hasActiveCall = false
         stateQueue.sync { hasActiveCall = activeCallUUID != nil }
+        print("[CallKit] Has active call: \(hasActiveCall)")
 
         // If a call is already active, end it first before reporting new one
         if hasActiveCall, let existing = stateQueue.sync(execute: { activeCallUUID }) {
+            print("[CallKit] Ending existing call first")
             provider.reportCall(with: existing, endedAt: Date(), reason: .remoteEnded)
             stateQueue.sync { self.activeCallUUID = nil }
         }
 
         let uuid = UUID()
+        print("[CallKit] Creating new call UUID: \(uuid)")
         stateQueue.sync {
             self.activeCallUUID   = uuid
             self.callWasAnswered  = false
@@ -57,6 +62,7 @@ class CallKitManager: NSObject, ObservableObject {
         update.supportsHolding     = false
         update.supportsDTMF        = false
 
+        print("[CallKit] Reporting new incoming call to system")
         provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
             if let error = error {
                 print("[CallKit] reportIncomingCall failed: \(error.localizedDescription)")
@@ -66,6 +72,8 @@ class CallKitManager: NSObject, ObservableObject {
                     self?.activeCallUUID  = nil
                     self?.callWasAnswered = false
                 }
+            } else {
+                print("[CallKit] reportIncomingCall succeeded")
             }
         }
     }

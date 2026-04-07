@@ -433,27 +433,40 @@ class BluetoothBridge: NSObject, ObservableObject {
             // Check if we have complete packet
             guard buf.count >= 5 + len else { break }
 
-            // Extract payload safely
-            let payload = buf.subdata(in: 5..<(5+len))
-            
-            buf.removeFirst(5 + len)
+            // CRASH SAFETY: Wrap entire packet processing in do-catch
+            do {
+                // Extract payload safely
+                let payload = buf.subdata(in: 5..<(5+len))
+                
+                buf.removeFirst(5 + len)
 
-            switch marker {
-            case Self.MARK_JSON:
-                if let s = String(data: payload, encoding: .utf8) {
-                    dispatchJSON(s)
+                switch marker {
+                case Self.MARK_JSON:
+                    print("[Konnekt] Received JSON packet, length=\(len)")
+                    if let s = String(data: payload, encoding: .utf8) {
+                        print("[Konnekt] JSON string: \(s.prefix(200))")
+                        dispatchJSON(s)
+                    } else {
+                        print("[Konnekt] Failed to decode JSON as UTF8")
+                    }
+                case Self.MARK_AUDIO:
+                    print("[Konnekt] Received AUDIO packet, length=\(len)")
+                    let copy = payload
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self, self.isConnected else { return }
+                        self.onAudioReceived?(copy)
+                    }
+                default:
+                    // Unknown marker, skip it
+                    print("[Konnekt] Unknown marker: 0x\(String(marker, radix: 16))")
+                    if !buf.isEmpty {
+                        buf.removeFirst(1)
+                    }
                 }
-            case Self.MARK_AUDIO:
-                let copy = payload
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self, self.isConnected else { return }
-                    self.onAudioReceived?(copy)
-                }
-            default:
-                // Unknown marker, skip it
-                if !buf.isEmpty {
-                    buf.removeFirst(1)
-                }
+            } catch {
+                print("[Konnekt] Parse error: \(error), clearing buffer")
+                buf.removeAll()
+                return
             }
         }
     }
@@ -461,80 +474,119 @@ class BluetoothBridge: NSObject, ObservableObject {
     // MARK: - Dispatch JSON
 
     private func dispatchJSON(_ json: String) {
-        guard let raw = json.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
-              let type = obj["type"] as? String else {
-            print("[Konnekt] Bad JSON: \(json.prefix(80))")
+        print("[Konnekt] dispatchJSON called with: \(json.prefix(200))")
+        guard let raw = json.data(using: .utf8) else {
+            print("[Konnekt] dispatchJSON: Failed to convert to data")
+            return
+        }
+        
+        guard let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
+            print("[Konnekt] dispatchJSON: Failed to parse JSON")
+            return
+        }
+        
+        guard let type = obj["type"] as? String else {
+            print("[Konnekt] dispatchJSON: No 'type' field in JSON")
             return
         }
 
-        print("[Konnekt] Received: \(type)")
+        print("[Konnekt] dispatchJSON: type=\(type)")
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            print("[Konnekt] handlePacket: \(type) - on main thread")
             self.handlePacket(type: type, obj: obj)
         }
     }
     
     // Handle packets
     private func handlePacket(type: String, obj: [String: Any]) {
-        switch type {
-        case "HANDSHAKE":
-            let platform = obj["platform"] as? String ?? "unknown"
-            print("[Konnekt] Android handshake: platform=\(platform)")
-            updateStatus("Android connected!")
-            sendPacket([
-                "type": "HANDSHAKE",
-                "platform": "ios",
-                "version": "2.8"
-            ])
+        print("[Konnekt] handlePacket: \(type)")
+        
+        // CRASH SAFETY: Wrap each case in do-catch
+        do {
+            switch type {
+            case "HANDSHAKE":
+                let platform = obj["platform"] as? String ?? "unknown"
+                print("[Konnekt] HANDSHAKE from Android: platform=\(platform)")
+                updateStatus("Android connected!")
+                sendPacket([
+                    "type": "HANDSHAKE",
+                    "platform": "ios",
+                    "version": "2.8"
+                ])
+                print("[Konnekt] HANDSHAKE response sent")
 
-        case "HANDSHAKE_ACK":
-            updateStatus("Connected & Synced!")
+            case "HANDSHAKE_ACK":
+                print("[Konnekt] HANDSHAKE_ACK received")
+                updateStatus("Connected & Synced!")
 
-        case "CALL_INCOMING":
-            let id = obj["callId"] as? String ?? UUID().uuidString
-            guard id != lastCallId else { return }
-            lastCallId = id
+            case "CALL_INCOMING":
+                print("[Konnekt] CALL_INCOMING packet")
+                let id = obj["callId"] as? String ?? UUID().uuidString
+                guard id != lastCallId else { 
+                    print("[Konnekt] Duplicate call ignored")
+                    return
+                }
+                lastCallId = id
 
-            let caller = obj["caller"] as? String ?? obj["name"] as? String ?? "Unknown"
-            let number = obj["number"] as? String ?? obj["phoneNumber"] as? String ?? ""
-            updateStatus("Incoming call from \(caller)")
+                let caller = obj["caller"] as? String ?? obj["name"] as? String ?? "Unknown"
+                let number = obj["number"] as? String ?? obj["phoneNumber"] as? String ?? ""
+                updateStatus("Incoming call from \(caller)")
+                
+                // Safely invoke callback with validated data
+                let packet = CallPacket(callId: id, caller: caller, number: number)
+                print("[Konnekt] Calling onCallIncoming callback")
+                onCallIncoming?(packet)
+                print("[Konnekt] onCallIncoming callback completed")
+
+            case "CALL_ENDED", "CALL_END", "CALL_DISCONNECTED":
+                print("[Konnekt] Call ended packet: \(type)")
+                lastCallId = ""
+                print("[Konnekt] Calling onCallEnded callback")
+                onCallEnded?()
+                print("[Konnekt] onCallEnded callback completed")
+
+            case "SMS_RECEIVED", "SMS_HISTORY", "SMS", "MESSAGE":
+                print("[Konnekt] SMS packet: \(type)")
+                var ts = obj["timestamp"] as? TimeInterval ?? Date().timeIntervalSince1970
+                if ts < 946684800 { ts *= 1000 }
+                if ts > 2114380800 { ts /= 1000 }
+
+                let sender = obj["sender"] as? String ?? obj["name"] as? String ?? "Unknown"
+                let number = obj["number"] as? String ?? obj["from"] as? String ?? ""
+                let body = obj["body"] as? String ?? obj["message"] as? String ?? ""
+
+                let packet = SMSPacket(
+                    sender: sender, number: number, body: body,
+                    timestamp: ts, isHistory: type == "SMS_HISTORY")
+                print("[Konnekt] Calling onSMSReceived callback")
+                onSMSReceived?(packet)
+                print("[Konnekt] onSMSReceived callback completed")
+
+            case "HEARTBEAT", "PING":
+                print("[Konnekt] Heartbeat/Ping received")
+                sendPacket(["type": "PONG"])
+                
+            case "PONG", "ACK", "SYNC_COMPLETE":
+                print("[Konnekt] ACK received: \(type)")
+                break
+                
+            case "AUDIO_START", "AUDIO_STOP", "STREAM_START", "STREAM_STOP":
+                print("[Konnekt] Audio control: \(type)")
+                // Audio control messages - no-op, handled by audio manager
+                break
             
-            // Safely invoke callback with validated data
-            let packet = CallPacket(callId: id, caller: caller, number: number)
-            onCallIncoming?(packet)
-
-        case "CALL_ENDED", "CALL_END", "CALL_DISCONNECTED":
-            lastCallId = ""
-            onCallEnded?()
-
-        case "SMS_RECEIVED", "SMS_HISTORY", "SMS", "MESSAGE":
-            var ts = obj["timestamp"] as? TimeInterval ?? Date().timeIntervalSince1970
-            if ts < 946684800 { ts *= 1000 }
-            if ts > 2114380800 { ts /= 1000 }
-
-            let sender = obj["sender"] as? String ?? obj["name"] as? String ?? "Unknown"
-            let number = obj["number"] as? String ?? obj["from"] as? String ?? ""
-            let body = obj["body"] as? String ?? obj["message"] as? String ?? ""
-
-            let packet = SMSPacket(
-                sender: sender, number: number, body: body,
-                timestamp: ts, isHistory: type == "SMS_HISTORY")
-            onSMSReceived?(packet)
-
-        case "HEARTBEAT", "PING":
-            sendPacket(["type": "PONG"])
-            
-        case "PONG", "ACK", "SYNC_COMPLETE":
-            break
-            
-        case "AUDIO_START", "AUDIO_STOP", "STREAM_START", "STREAM_STOP":
-            // Audio control messages - no-op, handled by audio manager
-            break
-            
-        default:
-            print("[Konnekt] Unknown: \(type)")
+            case "DEVICE_INFO", "BATTERY", "NETWORK_STATUS":
+                print("[Konnekt] Device info: \(type)")
+                break
+                
+            default:
+                print("[Konnekt] Unknown packet type: \(type)")
+            }
+            print("[Konnekt] handlePacket: \(type) completed successfully")
+        } catch {
+            print("[Konnekt] handlePacket error: \(error)")
         }
     }
 
