@@ -426,11 +426,6 @@ class BluetoothBridge: NSObject, ObservableObject {
             }
         }
     }
-            if conn === self.conn && self.state == .connected {
-                self.readLoop(conn: conn)
-            }
-        }
-    }
 
     // MARK: - Parse
 
