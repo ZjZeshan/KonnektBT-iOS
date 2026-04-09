@@ -162,10 +162,12 @@ class BluetoothBridge: NSObject, ObservableObject {
     // MARK: - Discovery
 
     func startDiscovery() {
+        bridgeLogger.log(">>> startDiscovery() called", category: "BRIDGE")
         guard state == .idle || state == .searching else { return }
 
         updateStatus("Searching for Android...")
         state = .searching
+        bridgeLogger.log(">>> state set to searching", category: "BRIDGE")
 
         browser?.cancel()
         browser = nil
@@ -173,9 +175,12 @@ class BluetoothBridge: NSObject, ObservableObject {
         let params = NWParameters()
         params.includePeerToPeer = true
 
+        bridgeLogger.log(">>> Creating browser", category: "BRIDGE")
         let browser = NWBrowser(for: .bonjour(type: Self.bonjourType, domain: nil), using: params)
+        bridgeLogger.log(">>> Browser created", category: "BRIDGE")
 
         browser.stateUpdateHandler = { [weak self] newState in
+            bridgeLogger.log(">>> Browser state: \(String(describing: newState))", category: "BRIDGE")
             switch newState {
             case .ready:
                 self?.updateStatus("Discovery ready")
@@ -216,6 +221,7 @@ class BluetoothBridge: NSObject, ObservableObject {
     }
 
     func connectToIP(_ ip: String, port: UInt16? = nil) {
+        bridgeLogger.log(">>> connectToIP() called: \(ip)", category: "BRIDGE")
         let targetPort = port ?? Self.bonjourPort
         updateStatus("Connecting to \(ip)...")
 
@@ -230,12 +236,14 @@ class BluetoothBridge: NSObject, ObservableObject {
         let endpoint = NWEndpoint.hostPort(host: .init(ip), port: .init(integerLiteral: targetPort))
         lastEndpoint = endpoint
         state = .connecting
+        bridgeLogger.log(">>> connectToIP: calling connect()", category: "BRIDGE")
         connect(to: endpoint)
     }
 
     // MARK: - Connection
 
     private func connect(to endpoint: NWEndpoint) {
+        bridgeLogger.log(">>> connect() called", category: "BRIDGE")
         guard state == .searching || state == .connecting || state == .idle else {
             bridgeLogger.log("Already connected, ignoring", category: "BRIDGE")
             return
@@ -243,6 +251,7 @@ class BluetoothBridge: NSObject, ObservableObject {
 
         updateStatus("Connecting...")
         state = .connecting
+        bridgeLogger.log(">>> state set to connecting", category: "BRIDGE")
 
         let params = NWParameters.tcp
         params.prohibitExpensivePaths = false
@@ -250,14 +259,24 @@ class BluetoothBridge: NSObject, ObservableObject {
 
         let connection = NWConnection(to: endpoint, using: params)
 
+        // ULTRA EARLY - log BEFORE setting handler
+        bridgeLogger.log(">>> Created connection, setting state handler", category: "BRIDGE")
+        
         connection.stateUpdateHandler = { [weak self] s in
-            guard let self = self else { return }
+            // ULTRA EARLY - first line of handler
+            bridgeLogger.log(">>> stateUpdateHandler called: \(String(describing: s))", category: "BRIDGE")
+            guard let self = self else { 
+                bridgeLogger.log(">>> CRASH: self nil in state handler", category: "BRIDGE")
+                return 
+            }
 
             switch s {
             case .setup:
+                bridgeLogger.log(">>> .setup", category: "BRIDGE")
                 break
 
             case .preparing:
+                bridgeLogger.log(">>> .preparing", category: "BRIDGE")
                 break
 
             case .ready:
@@ -292,7 +311,7 @@ class BluetoothBridge: NSObject, ObservableObject {
                 }
 
             case .failed(let err):
-                bridgeLogger.log("Connection failed: \(err)", category: "BRIDGE")
+                bridgeLogger.log(">>> .failed: \(err.localizedDescription)", category: "BRIDGE")
                 DispatchQueue.main.async {
                     self.updateError("Connection failed: \(err.localizedDescription)")
                     self.state = .idle
@@ -301,12 +320,13 @@ class BluetoothBridge: NSObject, ObservableObject {
                 }
 
             case .waiting(let err):
-                bridgeLogger.log("Waiting: \(err)", category: "BRIDGE")
+                bridgeLogger.log(">>> .waiting: \(err.localizedDescription)", category: "BRIDGE")
                 DispatchQueue.main.async {
                     self.updateStatus("Waiting for network...")
                 }
 
             case .cancelled:
+                bridgeLogger.log(">>> .cancelled", category: "BRIDGE")
                 DispatchQueue.main.async {
                     self.updateStatus("Disconnected")
                     self.isConnected = false
@@ -314,15 +334,19 @@ class BluetoothBridge: NSObject, ObservableObject {
                 }
 
             @unknown default:
+                bridgeLogger.log(">>> unknown state", category: "BRIDGE")
                 break
             }
         }
 
         ioQ.async { [weak self] in
+            bridgeLogger.log(">>> ioQ: about to start connection", category: "BRIDGE")
             self?.conn = connection
             self?.buf.removeAll()
             connection.start(queue: self?.ioQ ?? DispatchQueue.main)
+            bridgeLogger.log(">>> ioQ: connection.start() called", category: "BRIDGE")
         }
+        bridgeLogger.log(">>> connect() end - connection queued to start", category: "BRIDGE")
     }
 
     // MARK: - Reconnection
