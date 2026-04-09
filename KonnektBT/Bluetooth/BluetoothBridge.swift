@@ -385,6 +385,7 @@ class BluetoothBridge: NSObject, ObservableObject {
                         bridgeLogger.log("Setting connected state", category: "BRIDGE")
                         self.state = .connected
                         self.isConnected = true
+                        self.lastError = nil
                         self.updateStatus("Connected!")
                         self.conn = self.activeConnection
                         
