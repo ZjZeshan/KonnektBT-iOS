@@ -228,16 +228,20 @@ struct ContentView: View {
     }
     
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             HomeView()
                 .tabItem { Label("Home", systemImage: "house.fill") }
+                .tag(0)
             SMSInboxView()
                 .tabItem { Label("Messages", systemImage: "message.fill") }
                 .badge(messageCount)
+                .tag(1)
             PairingView()
                 .tabItem { Label("Pair", systemImage: "link") }
+                .tag(2)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gear") }
+                .tag(3)
         }
         .tint(Color(hex: "#00e5a0"))
         .onChange(of: selectedTab) { _ in
