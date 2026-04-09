@@ -78,8 +78,6 @@ class AppState: ObservableObject {
         // Keep audio session active for VoIP background mode
         activateBackgroundAudio()
     }
-        }
-    }
     
     func handleForeground() {
         logger.log("Entering foreground", category: "APP")
