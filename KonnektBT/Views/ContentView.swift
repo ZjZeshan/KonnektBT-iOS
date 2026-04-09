@@ -77,6 +77,21 @@ class AppState: ObservableObject {
         logger.log("Entering background", category: "APP")
         // Keep audio session active for VoIP background mode
         activateBackgroundAudio()
+        
+        // Schedule background refresh task to keep connection alive
+        scheduleBackgroundRefresh()
+    }
+    
+    private func scheduleBackgroundRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: "com.zjzeshan.konnektbt.refresh")
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60) // 15 minutes
+        
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            logger.log("Background refresh scheduled", category: "APP")
+        } catch {
+            logger.error("Could not schedule background refresh: \(error)")
+        }
     }
     
     func handleForeground() {

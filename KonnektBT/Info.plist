@@ -38,6 +38,14 @@
         <string>audio</string>
         <!-- VoIP mode - keeps TCP connection alive in background -->
         <string>voip</string>
+        <!-- Background fetch for periodic connection checks -->
+        <string>fetch</string>
+    </array>
+    
+    <!-- Background Task Scheduler -->
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>com.zjzeshan.konnektbt.refresh</string>
     </array>
     
     <!-- Local Network Access -->

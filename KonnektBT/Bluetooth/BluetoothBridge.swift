@@ -6,6 +6,7 @@
 //
 import Foundation
 import Network
+import UIKit
 
 // File-based logger
 let bridgeLogger = Logger.shared
@@ -56,6 +57,8 @@ class BluetoothBridge: NSObject, ObservableObject {
     private var lastEndpoint: NWEndpoint?
     private var reconnectTimer: Timer?
     private var lastCallId = ""
+    private var reconnectAttempts = 0
+    private let maxReconnectAttempts = 10
     
     // CRASH FIX: Store active connection as strong reference to prevent deallocation
     private var activeConnection: NWConnection?
@@ -375,6 +378,10 @@ class BluetoothBridge: NSObject, ObservableObject {
         bridgeLogger.log(">>> teardown called", category: "BRIDGE")
         reconnectTimer?.invalidate()
         reconnectTimer = nil
+        
+        // Store endpoint for reconnection
+        let storedEndpoint = self.lastEndpoint
+        
         activeConnection?.cancel()
         activeConnection = nil
 
@@ -385,8 +392,19 @@ class BluetoothBridge: NSObject, ObservableObject {
         }
 
         DispatchQueue.main.async { [weak self] in
-            self?.isConnected = false
-            self?.state = .idle
+            guard let self = self else { return }
+            self.isConnected = false
+            self.state = .idle
+            
+            // Auto-reconnect if we have an endpoint
+            if let ep = storedEndpoint, self.reconnectAttempts < self.maxReconnectAttempts {
+                self.reconnectAttempts += 1
+                bridgeLogger.log(">>> Auto-reconnect attempt \(self.reconnectAttempts)/\(self.maxReconnectAttempts)", category: "BRIDGE")
+                self.scheduleReconnect()
+            } else if self.reconnectAttempts >= self.maxReconnectAttempts {
+                bridgeLogger.log(">>> Max reconnect attempts reached", category: "BRIDGE")
+                self.reconnectAttempts = 0 // Reset for next time
+            }
         }
     }
 
@@ -557,251 +575,7 @@ class BluetoothBridge: NSObject, ObservableObject {
             }
         }
     }
-
-        while buf.count >= 5 {
-            // Additional safety - verify we have valid buffer access
-            guard buf.count > 0 else { break }
-            
-            let marker = buf[0]
-            let len = (Int(buf[1]) << 24) | (Int(buf[2]) << 16) | (Int(buf[3]) << 8) | Int(buf[4])
-
-            // Validate length
-            guard len > 0, len <= 1_000_000 else {
-                bridgeLogger.log("Invalid packet length: \(len)", category: "BRIDGE")
-                var found = false
-                for i in 1..<min(buf.count, 100) {
-                    if buf[i] == Self.MARK_JSON || buf[i] == Self.MARK_AUDIO {
-                        buf.removeFirst(i)
-                        found = true
-                        break
-                    }
-                }
-                if !found { buf.removeAll() }
-                return
-            }
-
-            // Check if we have complete packet
-            guard buf.count >= 5 + len else { break }
-
-            // CRASH SAFETY: Wrap entire packet processing in do-catch
-            do {
-                // Extract payload safely
-                let payload = buf.subdata(in: 5..<(5+len))
-                
-                buf.removeFirst(5 + len)
-
-                switch marker {
-                case Self.MARK_JSON:
-                    bridgeLogger.log("Received JSON packet, length=\(len)", category: "PARSE")
-                    if let s = String(data: payload, encoding: .utf8) {
-                        bridgeLogger.log("JSON string: \(s.prefix(200))", category: "PARSE")
-                        dispatchJSON(s)
-                    } else {
-                        bridgeLogger.log("Failed to decode JSON as UTF8", category: "PARSE")
-                    }
-                case Self.MARK_AUDIO:
-                    bridgeLogger.log("Received AUDIO packet, length=\(len)", category: "AUDIO")
-                    let copy = payload
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self, self.isConnected else { return }
-                        self.onAudioReceived?(copy)
-                    }
-                default:
-                    // Unknown marker, skip it
-                    bridgeLogger.log("Unknown marker: 0x\(String(marker, radix: 16))", category: "PARSE")
-                    if !buf.isEmpty {
-                        buf.removeFirst(1)
-                    }
-                }
-            } catch {
-                bridgeLogger.log("Parse error: \(error), clearing buffer", category: "PARSE")
-                buf.removeAll()
-                return
-            }
-        }
-    }
-
-    // MARK: - Dispatch JSON
-
-    private func dispatchJSON(_ json: String) {
-        bridgeLogger.log("dispatchJSON called with: \(json.prefix(200))", category: "PACKET")
-        guard let raw = json.data(using: .utf8) else {
-            bridgeLogger.log("dispatchJSON: Failed to convert to data", category: "PACKET")
-            return
-        }
-        
-        guard let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
-            bridgeLogger.log("dispatchJSON: Failed to parse JSON", category: "PACKET")
-            return
-        }
-        
-        guard let type = obj["type"] as? String else {
-            bridgeLogger.log("dispatchJSON: No 'type' field in JSON", category: "PACKET")
-            return
-        }
-
-        bridgeLogger.log("dispatchJSON: type=\(type), dispatching to main thread", category: "PACKET")
-
-        // CRASH FIX: Wrap in do-catch and use weak self
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                bridgeLogger.log("CRASH: self nil in dispatchJSON callback", category: "PACKET")
-                return
-            }
-            bridgeLogger.log("handlePacket: \(type) - on main thread", category: "PACKET")
-            self.handlePacket(type: type, obj: obj)
-            bridgeLogger.log("handlePacket completed", category: "PACKET")
-        }
-    }
     
-    // Handle packets
-    private func handlePacket(type: String, obj: [String: Any]) {
-        bridgeLogger.log("handlePacket: \(type)", category: "PACKET")
-        
-        // CRASH SAFETY: Wrap each case in do-catch
-        do {
-            switch type {
-            case "HANDSHAKE":
-                let platform = obj["platform"] as? String ?? "unknown"
-                bridgeLogger.log("HANDSHAKE from Android: platform=\(platform)", category: "PACKET")
-                updateStatus("Android connected!")
-                sendPacket([
-                    "type": "HANDSHAKE",
-                    "platform": "ios",
-                    "version": "2.8"
-                ])
-                bridgeLogger.log("HANDSHAKE response sent", category: "PACKET")
-
-            case "HANDSHAKE_ACK":
-                bridgeLogger.log("HANDSHAKE_ACK received", category: "PACKET")
-                updateStatus("Connected & Synced!")
-
-            case "CALL_INCOMING":
-                bridgeLogger.log("CALL_INCOMING packet", category: "PACKET")
-                let id = obj["callId"] as? String ?? UUID().uuidString
-                guard id != lastCallId else { 
-                    bridgeLogger.log("Duplicate call ignored", category: "PACKET")
-                    return
-                }
-                lastCallId = id
-
-                let caller = obj["caller"] as? String ?? obj["name"] as? String ?? "Unknown"
-                let number = obj["number"] as? String ?? obj["phoneNumber"] as? String ?? ""
-                updateStatus("Incoming call from \(caller)")
-                
-                // Safely invoke callback with validated data
-                let packet = CallPacket(callId: id, caller: caller, number: number)
-                bridgeLogger.log("Calling onCallIncoming callback", category: "PACKET")
-                onCallIncoming?(packet)
-                bridgeLogger.log("onCallIncoming callback completed", category: "PACKET")
-
-            case "CALL_ENDED", "CALL_END", "CALL_DISCONNECTED":
-                bridgeLogger.log("Call ended packet: \(type)", category: "PACKET")
-                lastCallId = ""
-                bridgeLogger.log("Calling onCallEnded callback", category: "PACKET")
-                onCallEnded?()
-                bridgeLogger.log("onCallEnded callback completed", category: "PACKET")
-
-            case "SMS_RECEIVED", "SMS_HISTORY", "SMS", "MESSAGE":
-                bridgeLogger.log("SMS packet: \(type)", category: "PACKET")
-                var ts = obj["timestamp"] as? TimeInterval ?? Date().timeIntervalSince1970
-                if ts < 946684800 { ts *= 1000 }
-                if ts > 2114380800 { ts /= 1000 }
-
-                let sender = obj["sender"] as? String ?? obj["name"] as? String ?? "Unknown"
-                let number = obj["number"] as? String ?? obj["from"] as? String ?? ""
-                let body = obj["body"] as? String ?? obj["message"] as? String ?? ""
-
-                let packet = SMSPacket(
-                    sender: sender, number: number, body: body,
-                    timestamp: ts, isHistory: type == "SMS_HISTORY")
-                bridgeLogger.log("Calling onSMSReceived callback", category: "PACKET")
-                onSMSReceived?(packet)
-                bridgeLogger.log("onSMSReceived callback completed", category: "PACKET")
-
-            case "HEARTBEAT", "PING":
-                bridgeLogger.log("Heartbeat/Ping received", category: "PACKET")
-                sendPacket(["type": "PONG"])
-                
-            case "PONG", "ACK", "SYNC_COMPLETE":
-                bridgeLogger.log("ACK received: \(type)", category: "PACKET")
-                break
-                
-            case "AUDIO_START", "AUDIO_STOP", "STREAM_START", "STREAM_STOP":
-                bridgeLogger.log("Audio control: \(type)", category: "PACKET")
-                // Audio control messages - no-op, handled by audio manager
-                break
-            
-            case "DEVICE_INFO", "BATTERY", "NETWORK_STATUS":
-                bridgeLogger.log("Device info: \(type)", category: "PACKET")
-                break
-                
-            default:
-                bridgeLogger.log("Unknown packet type: \(type)", category: "PACKET")
-            }
-            bridgeLogger.log("handlePacket: \(type) completed successfully", category: "PACKET")
-        } catch {
-            bridgeLogger.log("handlePacket error: \(error)", category: "PACKET")
-        }
-    }
-
-    // MARK: - Send
-
-    func sendPacket(_ dict: [String: Any]) {
-        guard let json = try? JSONSerialization.data(withJSONObject: dict) else {
-            bridgeLogger.log("JSON encode failed", category: "SEND")
-            return
-        }
-        send(marker: Self.MARK_JSON, payload: json)
-    }
-
-    func sendAudioFrame(_ data: Data) {
-        send(marker: Self.MARK_AUDIO, payload: data)
-    }
-
-    private func send(marker: UInt8, payload: Data) {
-        var frame = Data(capacity: 5 + payload.count)
-        frame.append(marker)
-        let len = payload.count
-        frame.append(contentsOf: [
-            UInt8((len >> 24) & 0xFF),
-            UInt8((len >> 16) & 0xFF),
-            UInt8((len >> 8) & 0xFF),
-            UInt8(len & 0xFF)
-        ])
-        frame.append(payload)
-
-        ioQ.async { [weak self] in
-            guard let conn = self?.conn else { return }
-            conn.send(content: frame, completion: .contentProcessed { err in
-                if let err = err {
-                    bridgeLogger.log("Send error: \(err)", category: "SEND")
-                }
-            })
-        }
-    }
-
-    // MARK: - Public API
-
-    func sendCallAnswered() { sendPacket(["type": "CALL_ANSWERED"]) }
-    func sendCallRejected() { sendPacket(["type": "CALL_REJECTED"]) }
-    func sendCallEnded() { sendPacket(["type": "CALL_ENDED"]) }
-    func sendSMS(to number: String, body: String) {
-        sendPacket(["type": "SEND_SMS", "to": number, "body": body])
-    }
-
-    func disconnect() {
-        updateStatus("Disconnecting...")
-        reconnectTimer?.invalidate()
-        browser?.cancel()
-        browser = nil
-        pathMonitor?.cancel()
-        pathMonitor = nil
-        teardown()
-        state = .idle
-        updateStatus("Disconnected")
-    }
-
     // MARK: - Helpers
 
     private func isValidIP(_ ip: String) -> Bool {
