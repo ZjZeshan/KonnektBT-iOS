@@ -80,7 +80,68 @@ class BluetoothBridge: NSObject, ObservableObject {
     }
 
     deinit {
-        disconnect()
+        teardown()
+    }
+
+    // MARK: - Public API
+
+    func disconnect() {
+        teardown()
+    }
+    
+    func sendCallAnswered() {
+        sendPacket(["type": "CALL_ANSWERED"])
+    }
+    
+    func sendCallRejected() {
+        sendPacket(["type": "CALL_REJECTED"])
+    }
+    
+    func sendCallEnded() {
+        sendPacket(["type": "CALL_ENDED"])
+    }
+    
+    func sendSMS(to number: String, body: String) {
+        sendPacket([
+            "type": "SMS",
+            "to": number,
+            "body": body,
+            "timestamp": Date().timeIntervalSince1970 * 1000
+        ])
+    }
+    
+    // MARK: - Send Packet (Private)
+
+    private func sendPacket(_ json: [String: Any]) {
+        guard state == .connected, let conn = conn else {
+            bridgeLogger.log("sendPacket: not connected", category: "SEND")
+            return
+        }
+        
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: json)
+            guard let jsonString = String(data: jsonData, encoding: .utf8) else { return }
+            
+            // Binary protocol: [marker (1 byte)][length (4 bytes)][JSON data]
+            var packet = Data()
+            packet.append(Self.MARK_JSON)
+            
+            var length = UInt32(jsonData.count).bigEndian
+            packet.append(Data(bytes: &length, count: 4))
+            packet.append(jsonData)
+            
+            ioQ.async {
+                conn.send(content: packet, completion: .contentProcessed { err in
+                    if let err = err {
+                        bridgeLogger.log("sendPacket error: \(err)", category: "SEND")
+                    }
+                })
+            }
+            
+            bridgeLogger.log("sendPacket: \(json)", category: "SEND")
+        } catch {
+            bridgeLogger.log("sendPacket JSON error: \(error)", category: "SEND")
+        }
     }
 
     // MARK: - Status Updates
