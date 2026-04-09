@@ -60,6 +60,10 @@ class BluetoothBridge: NSObject, ObservableObject {
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 10
     
+    // Heartbeat to keep connection alive
+    private var heartbeatTimer: Timer?
+    private let heartbeatInterval: TimeInterval = 10.0 // Send heartbeat every 10 seconds
+    
     // CRASH FIX: Store active connection as strong reference to prevent deallocation
     private var activeConnection: NWConnection?
 
@@ -315,6 +319,9 @@ class BluetoothBridge: NSObject, ObservableObject {
                             "version": "2.5"
                         ])
                         bridgeLogger.log("HANDSHAKE sent - waiting for response...", category: "BRIDGE")
+                        
+                        // Start heartbeat to keep connection alive
+                        self.startHeartbeat()
                     }
                 }
 
@@ -378,6 +385,7 @@ class BluetoothBridge: NSObject, ObservableObject {
         bridgeLogger.log(">>> teardown called", category: "BRIDGE")
         reconnectTimer?.invalidate()
         reconnectTimer = nil
+        stopHeartbeat()
         
         // Store endpoint for reconnection
         let storedEndpoint = self.lastEndpoint
@@ -406,6 +414,31 @@ class BluetoothBridge: NSObject, ObservableObject {
                 self.reconnectAttempts = 0 // Reset for next time
             }
         }
+    }
+
+    // MARK: - Heartbeat (Keep Connection Alive)
+
+    private func startHeartbeat() {
+        stopHeartbeat()
+        bridgeLogger.log("Starting heartbeat (every \(heartbeatInterval)s)", category: "BRIDGE")
+        
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: heartbeatInterval, repeats: true) { [weak self] _ in
+            guard let self = self, self.state == .connected else { return }
+            self.sendHeartbeat()
+        }
+    }
+    
+    private func stopHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        bridgeLogger.log("Heartbeat stopped", category: "BRIDGE")
+    }
+    
+    private func sendHeartbeat() {
+        guard state == .connected else { return }
+        
+        bridgeLogger.log("Sending heartbeat PING", category: "BRIDGE")
+        sendPacket(["type": "PING"])
     }
 
     // MARK: - Read Loop
@@ -574,6 +607,81 @@ class BluetoothBridge: NSObject, ObservableObject {
                 }
             }
         }
+    }
+    
+    // MARK: - Dispatch JSON (Handle Incoming Packets)
+
+    private func dispatchJSON(_ jsonString: String) {
+        bridgeLogger.log("dispatchJSON: parsing \(jsonString.prefix(100))", category: "PARSE")
+        
+        guard let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = json["type"] as? String else {
+            bridgeLogger.log("dispatchJSON: invalid JSON", category: "PARSE")
+            return
+        }
+        
+        bridgeLogger.log("dispatchJSON: type=\(type)", category: "PARSE")
+        
+        // Handle PONG from Android (response to our heartbeat)
+        if type == "PONG" {
+            bridgeLogger.log("Received PONG from Android - connection alive!", category: "BRIDGE")
+            return
+        }
+        
+        // Handle PING from Android
+        if type == "PING" {
+            bridgeLogger.log("Received PING from Android, responding with PONG", category: "BRIDGE")
+            sendPacket(["type": "PONG"])
+            return
+        }
+        
+        // Handle HANDSHAKE response
+        if type == "HANDSHAKE_ACK" {
+            bridgeLogger.log("Received HANDSHAKE_ACK from Android!", category: "BRIDGE")
+            return
+        }
+        
+        // Handle incoming call
+        if type == "CALL_INCOMING" {
+            if let callId = json["callId"] as? String,
+               let number = json["number"] as? String {
+                let caller = json["caller"] as? String ?? ""
+                bridgeLogger.log("dispatchJSON: CALL_INCOMING - \(caller) (\(number))", category: "CALL")
+                
+                let packet = CallPacket(callId: callId, caller: caller, number: number)
+                DispatchQueue.main.async { [weak self] in
+                    self?.onCallIncoming?(packet)
+                }
+            }
+            return
+        }
+        
+        // Handle call ended
+        if type == "CALL_ENDED" {
+            bridgeLogger.log("dispatchJSON: CALL_ENDED", category: "CALL")
+            DispatchQueue.main.async { [weak self] in
+                self?.onCallEnded?()
+            }
+            return
+        }
+        
+        // Handle SMS
+        if type == "SMS" {
+            if let from = json["from"] as? String,
+               let body = json["body"] as? String {
+                let timestamp = json["timestamp"] as? TimeInterval ?? Date().timeIntervalSince1970
+                bridgeLogger.log("dispatchJSON: SMS from \(from)", category: "SMS")
+                
+                let packet = SMSPacket(sender: from, number: from, body: body, timestamp: timestamp, isHistory: false)
+                DispatchQueue.main.async { [weak self] in
+                    self?.onSMSReceived?(packet)
+                }
+            }
+            return
+        }
+        
+        bridgeLogger.log("dispatchJSON: unknown type \(type)", category: "PARSE")
     }
     
     // MARK: - Helpers
