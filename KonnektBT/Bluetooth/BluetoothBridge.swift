@@ -56,6 +56,9 @@ class BluetoothBridge: NSObject, ObservableObject {
     private var lastEndpoint: NWEndpoint?
     private var reconnectTimer: Timer?
     private var lastCallId = ""
+    
+    // CRASH FIX: Store active connection as strong reference to prevent deallocation
+    private var activeConnection: NWConnection?
 
     // Private - IO Queue
     private let ioQ = DispatchQueue(label: "com.konnekt.io", qos: .userInitiated)
@@ -258,33 +261,34 @@ class BluetoothBridge: NSObject, ObservableObject {
                 break
 
             case .ready:
-                bridgeLogger.log("Connection .ready received", category: "BRIDGE")
-                // CRASH FIX: Capture connection before async dispatch
-                let connCopy = connection
+                // ULTRA EARLY LOG - before any async
+                bridgeLogger.log("!!! .ready received", category: "BRIDGE")
+                
+                // CRASH FIX: Keep connection alive with strong reference
+                self.activeConnection = connection
+                bridgeLogger.log("!!! stored activeConnection", category: "BRIDGE")
+                
                 DispatchQueue.main.async { [weak self] in
+                    bridgeLogger.log("!!! MAIN THREAD .ready", category: "BRIDGE")
                     guard let self = self else { 
-                        bridgeLogger.log("CRASH: self nil in .ready handler", category: "BRIDGE")
+                        bridgeLogger.log("CRASH: self nil", category: "BRIDGE")
                         return 
                     }
-                    // Additional safety - verify we're in a valid state to connect
-                    guard self.state == .connecting || self.state == .searching || self.state == .idle else {
-                        bridgeLogger.log("Already connected or invalid state, ignoring", category: "BRIDGE")
-                        return
+                    
+                    if self.state != .connected {
+                        bridgeLogger.log("Setting connected state", category: "BRIDGE")
+                        self.state = .connected
+                        self.isConnected = true
+                        self.updateStatus("Connected!")
+                        self.conn = self.activeConnection
+                        
+                        bridgeLogger.log("Starting readLoop", category: "BRIDGE")
+                        self.readLoop(conn: self.activeConnection!)
+                        
+                        bridgeLogger.log("Sending HANDSHAKE", category: "BRIDGE")
+                        self.sendPacket(["type": "HANDSHAKE", "platform": "ios", "version": "2.8"])
+                        bridgeLogger.log("DONE .ready handler", category: "BRIDGE")
                     }
-                    bridgeLogger.log("Setting state to connected, starting readLoop and sending HANDSHAKE", category: "BRIDGE")
-                    self.state = .connected
-                    self.isConnected = true
-                    self.updateStatus("Connected!")
-                    self.lastError = nil
-                    
-                    // CRASH FIX: Start readLoop with captured connection
-                    bridgeLogger.log("Starting readLoop...", category: "BRIDGE")
-                    self.readLoop(conn: connCopy)
-                    
-                    // CRASH FIX: Send handshake
-                    bridgeLogger.log("Sending HANDSHAKE...", category: "BRIDGE")
-                    self.sendPacket(["type": "HANDSHAKE", "platform": "ios", "version": "2.8"])
-                    bridgeLogger.log("HANDSHAKE sent", category: "BRIDGE")
                 }
 
             case .failed(let err):
@@ -339,8 +343,11 @@ class BluetoothBridge: NSObject, ObservableObject {
     }
 
     private func teardown() {
+        bridgeLogger.log(">>> teardown called", category: "BRIDGE")
         reconnectTimer?.invalidate()
         reconnectTimer = nil
+        activeConnection?.cancel()
+        activeConnection = nil
 
         ioQ.async { [weak self] in
             self?.conn?.cancel()
@@ -357,27 +364,23 @@ class BluetoothBridge: NSObject, ObservableObject {
     // MARK: - Read Loop
 
     private func readLoop(conn: NWConnection) {
-        bridgeLogger.log("readLoop started", category: "BRIDGE")
+        bridgeLogger.log(">>> readLoop started", category: "BRIDGE")
         
-        // Safety check - don't read if we're not in connected state
         guard state == .connected else { 
-            bridgeLogger.log("readLoop: state not connected, exiting", category: "BRIDGE")
+            bridgeLogger.log(">>> readLoop: not connected, exit", category: "BRIDGE")
             return 
         }
         
-        // CRASH FIX: Capture conn to prevent deallocation
-        let connection = conn
-        
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, err in
-            guard let self = self else { 
-                bridgeLogger.log("CRASH: self nil in receive callback", category: "BRIDGE")
-                return 
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, err in
+            guard let self = self else {
+                bridgeLogger.log(">>> CRASH: self nil in receive", category: "BRIDGE")
+                return
             }
             
-            bridgeLogger.log("receive callback fired", category: "BRIDGE")
+            bridgeLogger.log(">>> receive callback", category: "BRIDGE")
             
             // Additional safety check - verify this connection is still the active one
-            guard connection === self.conn else {
+            guard conn === self.conn else {
                 bridgeLogger.log("Stale connection callback, ignoring", category: "BRIDGE")
                 return
             }
@@ -420,9 +423,9 @@ class BluetoothBridge: NSObject, ObservableObject {
             }
 
             // Continue reading only if this is still the active connection
-            if connection === self.conn && self.state == .connected {
+            if conn === self.conn && self.state == .connected {
                 bridgeLogger.log("Calling readLoop recursively...", category: "BRIDGE")
-                self.readLoop(conn: connection)
+                self.readLoop(conn: conn)
             }
         }
     }
