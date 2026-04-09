@@ -475,7 +475,7 @@ struct SMSInboxView: View {
                             let thread = threads[index]
                             if let latest = thread.first {
                                 NavigationLink(destination: SMSThreadView(
-                                    number: latest.number, messages: thread)) {
+                                    number: latest.number, messages: thread).environmentObject(appState)) {
                                     SMSRowView(packet: latest)
                                 }
                                 .listRowBackground(Color(hex: "#12151c"))
@@ -546,6 +546,7 @@ struct SMSThreadView: View {
                     Button {
                         let text = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !text.isEmpty else { return }
+                        logger.log("Send button pressed: to=\(number), text=\(text)", category: "APP")
                         appState.bridge.sendSMS(to: number, body: text)
                         replyText = ""
                     } label: {
