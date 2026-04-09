@@ -2,7 +2,6 @@
 import SwiftUI
 import os.log
 import UIKit
-import BackgroundTasks
 
 @main
 struct KonnektBTApp: App {
@@ -11,40 +10,6 @@ struct KonnektBTApp: App {
     
     // File-based logger for crash debugging
     private let fileLogger = Logger.shared
-
-    init() {
-        // Register background tasks to keep connection alive
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.zjzeshan.konnektbt.refresh", using: nil) { task in
-            self.handleAppRefresh(task: task as! BGAppRefreshTask)
-        }
-        fileLogger.log("BGTaskScheduler registered", category: "APP")
-    }
-    
-    private func handleAppRefresh(task: BGAppRefreshTask) {
-        fileLogger.log("BGAppRefreshTask fired", category: "APP")
-        // Schedule next refresh
-        scheduleAppRefresh()
-        
-        task.expirationHandler = {
-            fileLogger.log("BGTask expired", category: "APP")
-        }
-        
-        // Try to keep connection alive
-        fileLogger.log("BGTask: ensuring connection", category: "APP")
-        task.setTaskCompleted(success: true)
-    }
-    
-    private func scheduleAppRefresh() {
-        let request = BGAppRefreshTaskRequest(identifier: "com.zjzeshan.konnektbt.refresh")
-        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60) // 15 minutes
-        
-        do {
-            try BGTaskScheduler.shared.submit(request)
-            fileLogger.log("BGAppRefreshTask scheduled", category: "APP")
-        } catch {
-            fileLogger.error("Could not schedule BGTask: \(error)")
-        }
-    }
 
     var body: some Scene {
         WindowGroup {
