@@ -2,6 +2,7 @@
 import SwiftUI
 import os.log
 import UIKit
+import BackgroundTasks
 
 @main
 struct KonnektBTApp: App {

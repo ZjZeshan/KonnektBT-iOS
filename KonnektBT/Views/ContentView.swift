@@ -2,6 +2,7 @@
 import SwiftUI
 import AVFoundation
 import UIKit
+import BackgroundTasks
 
 // Global logger instance
 let logger = Logger.shared

@@ -110,6 +110,24 @@ class BluetoothBridge: NSObject, ObservableObject {
         ])
     }
     
+    func sendAudioFrame(_ data: Data) {
+        guard state == .connected, let conn = conn else {
+            return
+        }
+        
+        // Audio packet: [marker (1 byte)][length (4 bytes)][audio data]
+        var packet = Data()
+        packet.append(Self.MARK_AUDIO)
+        
+        var length = UInt32(data.count).bigEndian
+        packet.append(Data(bytes: &length, count: 4))
+        packet.append(data)
+        
+        ioQ.async {
+            conn.send(content: packet, completion: .contentProcessed { _ in })
+        }
+    }
+    
     // MARK: - Send Packet (Private)
 
     private func sendPacket(_ json: [String: Any]) {
@@ -120,7 +138,7 @@ class BluetoothBridge: NSObject, ObservableObject {
         
         do {
             let jsonData = try JSONSerialization.data(withJSONObject: json)
-            guard let jsonString = String(data: jsonData, encoding: .utf8) else { return }
+            _ = String(data: jsonData, encoding: .utf8) // Verify UTF8
             
             // Binary protocol: [marker (1 byte)][length (4 bytes)][JSON data]
             var packet = Data()
