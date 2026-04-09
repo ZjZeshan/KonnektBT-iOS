@@ -304,9 +304,14 @@ class BluetoothBridge: NSObject, ObservableObject {
                         bridgeLogger.log("Starting readLoop", category: "BRIDGE")
                         self.readLoop(conn: self.activeConnection!)
                         
-                        bridgeLogger.log("Sending HANDSHAKE", category: "BRIDGE")
-                        self.sendPacket(["type": "HANDSHAKE", "platform": "ios", "version": "2.8"])
-                        bridgeLogger.log("DONE .ready handler", category: "BRIDGE")
+                        // Send HANDSHAKE - CRITICAL: Android expects this!
+                        bridgeLogger.log("Sending HANDSHAKE...", category: "BRIDGE")
+                        self.sendPacket([
+                            "type": "HANDSHAKE", 
+                            "platform": "ios", 
+                            "version": "2.5"
+                        ])
+                        bridgeLogger.log("HANDSHAKE sent - waiting for response...", category: "BRIDGE")
                     }
                 }
 
@@ -412,8 +417,9 @@ class BluetoothBridge: NSObject, ObservableObject {
             if let err = err {
                 let code = (err as NSError).code
                 // Ignore common disconnect codes (57 = socket closed, 54 = connection reset)
+                // BUT error 53 (Software caused connection abort) means Android closed connection
                 if code != 57 && code != 54 {
-                    bridgeLogger.log("Receive error: \(code)", category: "BRIDGE")
+                    bridgeLogger.log("Receive error: \(code) - connection closed by remote", category: "BRIDGE")
                 }
                 DispatchQueue.main.async {
                     self.updateError("Connection lost")
@@ -422,8 +428,9 @@ class BluetoothBridge: NSObject, ObservableObject {
                 return
             }
 
+            // Check if we received any data
             if let data = data, !data.isEmpty {
-                bridgeLogger.log("Received data: \(data.count) bytes", category: "BRIDGE")
+                bridgeLogger.log(">>> Received \(data.count) bytes of data", category: "BRIDGE")
                 // Limit buffer size to prevent memory issues
                 let newSize = self.buf.count + data.count
                 if newSize > 10_000_000 {
@@ -458,14 +465,98 @@ class BluetoothBridge: NSObject, ObservableObject {
 
     private func parse() {
         // Safety check - ensure we have enough data
-        guard buf.count >= 5 else { return }
+        guard buf.count >= 1 else { 
+            bridgeLogger.log("parse: not enough data (\(buf.count) bytes)", category: "PARSE")
+            return 
+        }
+
+        // NEW: Check if this might be plain JSON (starts with {)
+        // Some Android implementations send raw JSON without the binary header
+        if buf.count >= 1 && buf[0] == 0x7B { // {
+            bridgeLogger.log("Detected plain JSON (starts with {)", category: "PARSE")
+            if let jsonString = String(data: buf, encoding: .utf8),
+               jsonString.contains("{") {
+                // Try to find the JSON start and parse
+                if let startRange = jsonString.range(of: "{") {
+                    let jsonStart = jsonString[startRange.lowerBound...]
+                    bridgeLogger.log("Trying to parse as plain JSON: \(jsonStart.prefix(100))", category: "PARSE")
+                    dispatchJSON(String(jsonStart))
+                    buf.removeAll()
+                }
+                return
+            }
+        }
 
         // Guard against buffer overflow
         if buf.count > 10_000_000 {
-            bridgeLogger.log("Buffer overflow, clearing", category: "BRIDGE")
+            bridgeLogger.log("Buffer overflow, clearing", category: "PARSE")
             buf.removeAll()
             return
         }
+
+        // Need at least 5 bytes for header
+        guard buf.count >= 5 else { 
+            bridgeLogger.log("parse: not enough data for header (\(buf.count) bytes)", category: "PARSE")
+            return 
+        }
+
+        while buf.count >= 5 {
+            let marker = buf[0]
+            let len = (Int(buf[1]) << 24) | (Int(buf[2]) << 16) | (Int(buf[3]) << 8) | Int(buf[4])
+
+            bridgeLogger.log("parse: marker=0x\(String(marker, radix: 16)), len=\(len), buf=\(buf.count)", category: "PARSE")
+
+            // Validate length
+            guard len > 0, len <= 1_000_000 else {
+                bridgeLogger.log("Invalid packet length: \(len)", category: "PARSE")
+                var found = false
+                for i in 1..<min(buf.count, 100) {
+                    if buf[i] == Self.MARK_JSON || buf[i] == Self.MARK_AUDIO || buf[i] == 0x7B {
+                        bridgeLogger.log("Found potential JSON start at offset \(i)", category: "PARSE")
+                        buf.removeFirst(i)
+                        found = true
+                        break
+                    }
+                }
+                if !found { buf.removeAll() }
+                return
+            }
+
+            // Check if we have complete packet
+            guard buf.count >= 5 + len else { 
+                bridgeLogger.log("Incomplete packet, need \(5+len), have \(buf.count)", category: "PARSE")
+                break 
+            }
+
+            // Extract payload safely
+            let payload = buf.subdata(in: 5..<(5+len))
+            buf.removeFirst(5 + len)
+
+            switch marker {
+            case Self.MARK_JSON:
+                bridgeLogger.log("Received JSON packet, length=\(len)", category: "PARSE")
+                if let s = String(data: payload, encoding: .utf8) {
+                    bridgeLogger.log("JSON string: \(s.prefix(200))", category: "PARSE")
+                    dispatchJSON(s)
+                } else {
+                    bridgeLogger.log("Failed to decode JSON as UTF8", category: "PARSE")
+                }
+            case Self.MARK_AUDIO:
+                bridgeLogger.log("Received AUDIO packet, length=\(len)", category: "AUDIO")
+                let copy = payload
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, self.isConnected else { return }
+                    self.onAudioReceived?(copy)
+                }
+            default:
+                // Unknown marker, skip it
+                bridgeLogger.log("Unknown marker: 0x\(String(marker, radix: 16))", category: "PARSE")
+                if !buf.isEmpty {
+                    buf.removeFirst(1)
+                }
+            }
+        }
+    }
 
         while buf.count >= 5 {
             // Additional safety - verify we have valid buffer access
