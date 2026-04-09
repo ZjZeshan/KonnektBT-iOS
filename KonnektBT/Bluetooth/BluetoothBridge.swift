@@ -143,25 +143,21 @@ class BluetoothBridge: NSObject, ObservableObject {
         
         do {
             let jsonData = try JSONSerialization.data(withJSONObject: json)
-            _ = String(data: jsonData, encoding: .utf8) // Verify UTF8
             
-            // Binary protocol: [marker (1 byte)][length (4 bytes)][JSON data]
-            var packet = Data()
-            packet.append(Self.MARK_JSON)
-            
-            var length = UInt32(jsonData.count).bigEndian
-            packet.append(Data(bytes: &length, count: 4))
-            packet.append(jsonData)
-            
-            ioQ.async {
-                conn.send(content: packet, completion: .contentProcessed { err in
-                    if let err = err {
-                        bridgeLogger.log("sendPacket error: \(err)", category: "SEND")
-                    }
-                })
+            // Send as plain text (like original working version)
+            if let jsonString = String(data: jsonData, encoding: .utf8) {
+                let packet = jsonString.data(using: .utf8) ?? jsonData
+                
+                ioQ.async {
+                    conn.send(content: packet, completion: .contentProcessed { err in
+                        if let err = err {
+                            bridgeLogger.log("sendPacket error: \(err)", category: "SEND")
+                        }
+                    })
+                }
+                
+                bridgeLogger.log("sendPacket (plain): \(json)", category: "SEND")
             }
-            
-            bridgeLogger.log("sendPacket: \(json)", category: "SEND")
         } catch {
             bridgeLogger.log("sendPacket JSON error: \(error)", category: "SEND")
         }
@@ -403,9 +399,6 @@ class BluetoothBridge: NSObject, ObservableObject {
                             "version": "2.5"
                         ])
                         bridgeLogger.log("HANDSHAKE sent - waiting for response...", category: "BRIDGE")
-                        
-                        // Start heartbeat to keep connection alive
-                        self.startHeartbeat()
                     }
                 }
 
@@ -605,79 +598,23 @@ class BluetoothBridge: NSObject, ObservableObject {
             return 
         }
 
-        // NEW: Check if this might be plain JSON (starts with {)
-        // Some Android implementations send raw JSON without the binary header
+        // Check if this is plain JSON (starts with {)
+        // This is the format that was working before
         if buf.count >= 1 && buf[0] == 0x7B { // {
-            bridgeLogger.log("Detected plain JSON (starts with {)", category: "PARSE")
-            if let jsonString = String(data: buf, encoding: .utf8),
-               jsonString.contains("{") {
-                // Try to find the JSON start and parse
-                if let startRange = jsonString.range(of: "{") {
-                    let jsonStart = jsonString[startRange.lowerBound...]
-                    bridgeLogger.log("Trying to parse as plain JSON: \(jsonStart.prefix(100))", category: "PARSE")
-                    dispatchJSON(String(jsonStart))
-                    buf.removeAll()
-                }
-                return
+            bridgeLogger.log("Detected plain JSON", category: "PARSE")
+            if let jsonString = String(data: buf, encoding: .utf8) {
+                bridgeLogger.log("Parsing JSON: \(jsonString.prefix(100))", category: "PARSE")
+                dispatchJSON(jsonString)
+                buf.removeAll()
             }
-        }
-
-        // Guard against buffer overflow
-        if buf.count > 10_000_000 {
-            bridgeLogger.log("Buffer overflow, clearing", category: "PARSE")
-            buf.removeAll()
             return
         }
-
-        // Need at least 5 bytes for header
-        guard buf.count >= 5 else { 
-            bridgeLogger.log("parse: not enough data for header (\(buf.count) bytes)", category: "PARSE")
-            return 
-        }
-
-        while buf.count >= 5 {
-            let marker = buf[0]
-            let len = (Int(buf[1]) << 24) | (Int(buf[2]) << 16) | (Int(buf[3]) << 8) | Int(buf[4])
-
-            bridgeLogger.log("parse: marker=0x\(String(marker, radix: 16)), len=\(len), buf=\(buf.count)", category: "PARSE")
-
-            // Validate length
-            guard len > 0, len <= 1_000_000 else {
-                bridgeLogger.log("Invalid packet length: \(len)", category: "PARSE")
-                var found = false
-                for i in 1..<min(buf.count, 100) {
-                    if buf[i] == Self.MARK_JSON || buf[i] == Self.MARK_AUDIO || buf[i] == 0x7B {
-                        bridgeLogger.log("Found potential JSON start at offset \(i)", category: "PARSE")
-                        buf.removeFirst(i)
-                        found = true
-                        break
-                    }
-                }
-                if !found { buf.removeAll() }
-                return
-            }
-
-            // Check if we have complete packet
-            guard buf.count >= 5 + len else { 
-                bridgeLogger.log("Incomplete packet, need \(5+len), have \(buf.count)", category: "PARSE")
-                break 
-            }
-
-            // Extract payload safely
-            let payload = buf.subdata(in: 5..<(5+len))
-            buf.removeFirst(5 + len)
-
-            switch marker {
-            case Self.MARK_JSON:
-                bridgeLogger.log("Received JSON packet, length=\(len)", category: "PARSE")
-                if let s = String(data: payload, encoding: .utf8) {
-                    bridgeLogger.log("JSON string: \(s.prefix(200))", category: "PARSE")
-                    dispatchJSON(s)
-                } else {
-                    bridgeLogger.log("Failed to decode JSON as UTF8", category: "PARSE")
-                }
-            case Self.MARK_AUDIO:
-                bridgeLogger.log("Received AUDIO packet, length=\(len)", category: "AUDIO")
+        
+        // If we get here, buffer doesn't start with {
+        // Just clear it to avoid getting stuck
+        bridgeLogger.log("parse: unknown format, clearing buffer", category: "PARSE")
+        buf.removeAll()
+    }
                 let copy = payload
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self, self.isConnected else { return }
@@ -706,25 +643,6 @@ class BluetoothBridge: NSObject, ObservableObject {
         }
         
         bridgeLogger.log("dispatchJSON: type=\(type)", category: "PARSE")
-        
-        // Handle PONG from Android (response to our heartbeat)
-        if type == "PONG" {
-            bridgeLogger.log("Received PONG from Android - connection alive!", category: "BRIDGE")
-            return
-        }
-        
-        // Handle PING from Android
-        if type == "PING" {
-            bridgeLogger.log("Received PING from Android, responding with PONG", category: "BRIDGE")
-            sendPacket(["type": "PONG"])
-            return
-        }
-        
-        // Handle HANDSHAKE response
-        if type == "HANDSHAKE_ACK" {
-            bridgeLogger.log("Received HANDSHAKE_ACK from Android!", category: "BRIDGE")
-            return
-        }
         
         // Handle incoming call
         if type == "CALL_INCOMING" {
