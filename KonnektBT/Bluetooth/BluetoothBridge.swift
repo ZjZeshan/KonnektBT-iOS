@@ -102,6 +102,7 @@ class BluetoothBridge: NSObject, ObservableObject {
     }
     
     func sendSMS(to number: String, body: String) {
+        bridgeLogger.log("sendSMS called: to=\(number), body=\(body)", category: "SEND")
         sendPacket([
             "type": "SMS",
             "to": number,
@@ -131,8 +132,12 @@ class BluetoothBridge: NSObject, ObservableObject {
     // MARK: - Send Packet (Private)
 
     private func sendPacket(_ json: [String: Any]) {
+        let currentState = state
+        let hasConnection = conn != nil
+        bridgeLogger.log("sendPacket: state=\(currentState), hasConn=\(hasConnection)", category: "SEND")
+        
         guard state == .connected, let conn = conn else {
-            bridgeLogger.log("sendPacket: not connected", category: "SEND")
+            bridgeLogger.log("sendPacket: not connected, aborting", category: "SEND")
             return
         }
         
