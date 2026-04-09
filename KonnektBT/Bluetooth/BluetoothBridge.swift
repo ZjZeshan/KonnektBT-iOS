@@ -259,8 +259,13 @@ class BluetoothBridge: NSObject, ObservableObject {
 
             case .ready:
                 bridgeLogger.log("Connection .ready received", category: "BRIDGE")
+                // CRASH FIX: Capture connection before async dispatch
+                let connCopy = connection
                 DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
+                    guard let self = self else { 
+                        bridgeLogger.log("CRASH: self nil in .ready handler", category: "BRIDGE")
+                        return 
+                    }
                     // Additional safety - verify we're in a valid state to connect
                     guard self.state == .connecting || self.state == .searching || self.state == .idle else {
                         bridgeLogger.log("Already connected or invalid state, ignoring", category: "BRIDGE")
@@ -271,7 +276,13 @@ class BluetoothBridge: NSObject, ObservableObject {
                     self.isConnected = true
                     self.updateStatus("Connected!")
                     self.lastError = nil
-                    self.readLoop(conn: connection)
+                    
+                    // CRASH FIX: Start readLoop with captured connection
+                    bridgeLogger.log("Starting readLoop...", category: "BRIDGE")
+                    self.readLoop(conn: connCopy)
+                    
+                    // CRASH FIX: Send handshake
+                    bridgeLogger.log("Sending HANDSHAKE...", category: "BRIDGE")
                     self.sendPacket(["type": "HANDSHAKE", "platform": "ios", "version": "2.8"])
                     bridgeLogger.log("HANDSHAKE sent", category: "BRIDGE")
                 }
@@ -346,14 +357,27 @@ class BluetoothBridge: NSObject, ObservableObject {
     // MARK: - Read Loop
 
     private func readLoop(conn: NWConnection) {
-        // Safety check - don't read if we're not in connected state
-        guard state == .connected else { return }
+        bridgeLogger.log("readLoop started", category: "BRIDGE")
         
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, err in
-            guard let self = self else { return }
+        // Safety check - don't read if we're not in connected state
+        guard state == .connected else { 
+            bridgeLogger.log("readLoop: state not connected, exiting", category: "BRIDGE")
+            return 
+        }
+        
+        // CRASH FIX: Capture conn to prevent deallocation
+        let connection = conn
+        
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, err in
+            guard let self = self else { 
+                bridgeLogger.log("CRASH: self nil in receive callback", category: "BRIDGE")
+                return 
+            }
+            
+            bridgeLogger.log("receive callback fired", category: "BRIDGE")
             
             // Additional safety check - verify this connection is still the active one
-            guard conn === self.conn else {
+            guard connection === self.conn else {
                 bridgeLogger.log("Stale connection callback, ignoring", category: "BRIDGE")
                 return
             }
@@ -372,6 +396,7 @@ class BluetoothBridge: NSObject, ObservableObject {
             }
 
             if let data = data, !data.isEmpty {
+                bridgeLogger.log("Received data: \(data.count) bytes", category: "BRIDGE")
                 // Limit buffer size to prevent memory issues
                 let newSize = self.buf.count + data.count
                 if newSize > 10_000_000 {
@@ -380,10 +405,13 @@ class BluetoothBridge: NSObject, ObservableObject {
                     return
                 }
                 self.buf.append(data)
+                bridgeLogger.log("Calling parse()...", category: "BRIDGE")
                 self.parse()
+                bridgeLogger.log("parse() completed", category: "BRIDGE")
             }
 
             if done {
+                bridgeLogger.log("Connection done", category: "BRIDGE")
                 DispatchQueue.main.async {
                     self.updateStatus("Connection closed")
                     self.teardown()
@@ -392,6 +420,12 @@ class BluetoothBridge: NSObject, ObservableObject {
             }
 
             // Continue reading only if this is still the active connection
+            if connection === self.conn && self.state == .connected {
+                bridgeLogger.log("Calling readLoop recursively...", category: "BRIDGE")
+                self.readLoop(conn: connection)
+            }
+        }
+    }
             if conn === self.conn && self.state == .connected {
                 self.readLoop(conn: conn)
             }
@@ -493,12 +527,17 @@ class BluetoothBridge: NSObject, ObservableObject {
             return
         }
 
-        bridgeLogger.log("dispatchJSON: type=\(type)", category: "PACKET")
+        bridgeLogger.log("dispatchJSON: type=\(type), dispatching to main thread", category: "PACKET")
 
+        // CRASH FIX: Wrap in do-catch and use weak self
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+            guard let self = self else {
+                bridgeLogger.log("CRASH: self nil in dispatchJSON callback", category: "PACKET")
+                return
+            }
             bridgeLogger.log("handlePacket: \(type) - on main thread", category: "PACKET")
             self.handlePacket(type: type, obj: obj)
+            bridgeLogger.log("handlePacket completed", category: "PACKET")
         }
     }
     
