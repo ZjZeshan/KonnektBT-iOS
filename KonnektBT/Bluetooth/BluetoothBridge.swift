@@ -615,20 +615,6 @@ class BluetoothBridge: NSObject, ObservableObject {
         bridgeLogger.log("parse: unknown format, clearing buffer", category: "PARSE")
         buf.removeAll()
     }
-                let copy = payload
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self, self.isConnected else { return }
-                    self.onAudioReceived?(copy)
-                }
-            default:
-                // Unknown marker, skip it
-                bridgeLogger.log("Unknown marker: 0x\(String(marker, radix: 16))", category: "PARSE")
-                if !buf.isEmpty {
-                    buf.removeFirst(1)
-                }
-            }
-        }
-    }
     
     // MARK: - Dispatch JSON (Handle Incoming Packets)
 
