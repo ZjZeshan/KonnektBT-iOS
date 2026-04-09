@@ -240,7 +240,14 @@ struct ContentView: View {
                 .tabItem { Label("Settings", systemImage: "gear") }
         }
         .tint(Color(hex: "#00e5a0"))
+        .onChange(of: selectedTab) { _ in
+            // Haptic feedback on tab change
+            let generator = UIImpactFeedbackGenerator(style: .light)
+            generator.impactOccurred()
+        }
     }
+    
+    @State private var selectedTab = 0
 }
 
 // ── Home ──────────────────────────────────────────────────────────────────────
