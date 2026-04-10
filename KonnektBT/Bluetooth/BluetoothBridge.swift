@@ -111,6 +111,21 @@ class BluetoothBridge: NSObject, ObservableObject {
         ])
     }
     
+    func startOutgoingCall(number rawNumber: String) {
+        let cleaned = rawNumber.filter { "0123456789+".contains($0) }
+        guard !cleaned.isEmpty else {
+            updateError("Invalid number")
+            return
+        }
+        let callId = UUID().uuidString
+        sendPacket([
+            "type": "CALL_OUTGOING",
+            "callId": callId,
+            "number": cleaned
+        ])
+        updateStatus("Calling \(cleaned)...")
+    }
+    
     func sendAudioFrame(_ data: Data) {
         guard state == .connected, let conn = conn else {
             return

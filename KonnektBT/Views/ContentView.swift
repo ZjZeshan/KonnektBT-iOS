@@ -242,6 +242,9 @@ struct ContentView: View {
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gear") }
                 .tag(3)
+            DialerView()
+                .tabItem { Label("Dialer", systemImage: "phone.fill") }
+                .tag(4)
         }
         .tint(Color(hex: "#00e5a0"))
         .onChange(of: selectedTab) { _ in
