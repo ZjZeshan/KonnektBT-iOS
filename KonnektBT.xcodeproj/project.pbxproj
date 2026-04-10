@@ -11,6 +11,7 @@
 		A104 /* CallKitManager.swift in Sources */   = {isa = PBXBuildFile; fileRef = B104; };
 		A105 /* AudioStreamManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B105; };
 		A106 /* Logger.swift in Sources */           = {isa = PBXBuildFile; fileRef = B109; };
+		A107 /* DialerView.swift in Sources */       = {isa = PBXBuildFile; fileRef = B110; };
 /* End PBXBuildFile section */
 /* Begin PBXFileReference section */
 		B001 /* KonnektBT.app */      = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KonnektBT.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -21,6 +22,7 @@
 		B105 /* AudioStreamManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioStreamManager.swift; sourceTree = "<group>"; };
 		B106 /* Info.plist */         = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B109 /* Logger.swift */       = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
+		B110 /* DialerView.swift */   = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DialerView.swift; sourceTree = "<group>"; };
 		B107 /* KonnektBT.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = KonnektBT.entitlements; sourceTree = "<group>"; };
 		B108 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -30,7 +32,7 @@
 /* Begin PBXGroup section */
 		D001 = {isa = PBXGroup; children = (D002, D009); sourceTree = "<group>"; };
 		D002 /* KonnektBT */ = {isa = PBXGroup; children = (B101, B106, B107, B108, D003, D004, D005); path = KonnektBT; sourceTree = "<group>"; };
-		D003 /* Views */    = {isa = PBXGroup; children = (B102); path = Views; sourceTree = "<group>"; };
+		D003 /* Views */    = {isa = PBXGroup; children = (B102, B110); path = Views; sourceTree = "<group>"; };
 		D004 /* Services */ = {isa = PBXGroup; children = (B104, B105, B109); path = Services; sourceTree = "<group>"; };
 		D005 /* Bluetooth */ = {isa = PBXGroup; children = (B103); path = Bluetooth; sourceTree = "<group>"; };
 		D009 /* Products */ = {isa = PBXGroup; children = (B001); name = Products; sourceTree = "<group>"; };
@@ -72,7 +74,7 @@ E003 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A10
 		E002 = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A101, A102, A103, A104, A105, A106);
+			files = (A101, A102, A103, A104, A105, A106, A107);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
